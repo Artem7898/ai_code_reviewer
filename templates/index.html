@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Code Review Assistant (Mistral)</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #6366f1;
+            --primary-hover: #4f46e5;
+            --secondary-color: #ec4899;
+            --bg-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --glass-bg: rgba(255, 255, 255, 0.95);
+            --text-dark: #1f2937;
+            --text-light: #6b7280;
+            --code-bg: #1e1e1e;
+            --danger-color: #ef4444;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-gradient);
+            min-height: 100vh;
+            padding: 20px;
+            color: var(--text-dark);
+            overflow: hidden; /* Предотвращаем скролл всей страницы, скроллим только внутри карточек */
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1.2fr;
+            gap: 25px;
+            height: calc(100vh - 40px);
+            min-height: 0; /* Важно для корректной работы flex/grid внутри */
+        }
+        .card {
+            background: var(--glass-bg);
+            border-radius: 16px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            backdrop-filter: blur(10px);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.3);
+            min-height: 0; /* Ключевая фиксация для скролла внутри Flex-элементов */
+        }
+        .card-header {
+            flex-shrink: 0; /* Шапка не сжимается */
+            background: rgba(255,255,255,0.5);
+            padding: 20px 25px;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .card-header h2 {
+            font-size: 1.25rem;
+            color: var(--text-dark);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            white-space: nowrap;
+        }
+        .card-body {
+            padding: 25px;
+            flex: 1; /* Занимает все оставшееся место */
+            overflow-y: auto; /* Включаем вертикальный скролл */
+            min-height: 0; /* КРИТИЧНО: Позволяет контенту сжиматься ниже размера родителя и включать скролл */
+            position: relative;
+        }
+
+        /* --- Кастомный скроллбар --- */
+        .card-body::-webkit-scrollbar {
+            width: 10px;
+        }
+        .card-body::-webkit-scrollbar-track {
+            background: rgba(0,0,0,0.05);
+            border-radius: 5px;
+        }
+        .card-body::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 5px;
+            border: 2px solid rgba(0,0,0,0.05);
+        }
+        .card-body::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+
+        /* --- Auth --- */
+        .auth-section {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: white;
+            padding: 10px 15px;
+            border-radius: 50px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            z-index: 100;
+        }
+        .auth-input {
+            border: 1px solid #e5e7eb;
+            padding: 8px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+            outline: none;
+            transition: border 0.3s;
+        }
+        .auth-input:focus { border-color: var(--primary-color); }
+        .btn-icon {
+            border: none;
+            background: none;
+            cursor: pointer;
+            color: var(--text-light);
+            transition: color 0.2s;
+        }
+        .btn-icon:hover { color: var(--primary-color); }
+
+        /* --- Tabs --- */
+        .tabs {
+            display: flex;
+            background: #f3f4f6;
+            padding: 5px;
+            border-radius: 10px;
+            margin-bottom: 25px;
+            flex-shrink: 0; /* Табы не сжимаются */
+        }
+        .tab {
+            flex: 1;
+            text-align: center;
+            padding: 10px;
+            cursor: pointer;
+            border-radius: 8px;
+            font-weight: 500;
+            color: var(--text-light);
+            transition: all 0.3s;
+            white-space: nowrap;
+        }
+        .tab.active {
+            background: white;
+            color: var(--primary-color);
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+
+        /* --- Components --- */
+        .upload-area {
+            border: 2px dashed #d1d5db;
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            background: #f9fafb;
+        }
+        .upload-area:hover, .upload-area.dragover {
+            border-color: var(--primary-color);
+            background: #eef2ff;
+        }
+        .upload-icon-lg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 15px;
+            color: var(--primary-color);
+        }
+        .form-group { margin-bottom: 20px; }
+        .form-control {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 15px;
+            outline: none;
+            transition: border 0.2s;
+        }
+        .form-control:focus { border-color: var(--primary-color); }
+        .btn {
+            width: 100%;
+            padding: 14px;
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, background 0.2s;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0; /* Кнопка не сжимается */
+        }
+        .btn:hover { background: var(--primary-hover); transform: translateY(-2px); }
+        .btn:active { transform: translateY(0); }
+        .btn:disabled { background: #9ca3af; cursor: not-allowed; }
+
+        /* --- History List --- */
+        .history-list { display: flex; flex-direction: column; gap: 10px; }
+        .history-item {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #e5e7eb;
+            cursor: pointer;
+            transition: all 0.2s;
+            flex-shrink: 0;
+        }
+        .history-item:hover { border-color: var(--primary-color); transform: translateX(5px); }
+        .history-meta { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-light); margin-bottom: 5px; }
+        .history-title { font-weight: 600; color: var(--text-dark); }
+        .status-badge { padding: 2px 8px; border-radius: 12px; font-size: 11px; background: #d1fae5; color: #065f46; }
+
+        /* --- Results (Markdown) --- */
+        .markdown-body {
+            font-size: 15px;
+            line-height: 1.6;
+            word-wrap: break-word; /* Перенос длинных слов */
+            overflow-wrap: break-word;
+        }
+        .markdown-body pre {
+            background: var(--code-bg);
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto; /* Горизонтальный скролл для кода */
+            color: #e6e6e6;
+            margin-bottom: 1em;
+            font-size: 13px; /* Чуть меньше шрифт для кода, чтобы влезал */
+        }
+        .markdown-body code {
+            font-family: 'Fira Code', monospace;
+            font-size: 0.9em;
+        }
+        .markdown-body h1, .markdown-body h2, .markdown-body h3 {
+            margin-top: 1.5em;
+            margin-bottom: 0.5em;
+            color: var(--text-dark);
+        }
+        .markdown-body strong { color: var(--secondary-color); }
+
+        .loading-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            text-align: center;
+        }
+        .ai-brain {
+            width: 60px; height: 60px; background: var(--primary-color); border-radius: 50%;
+            position: relative; animation: pulse 2s infinite; margin-bottom: 20px;
+            display: flex; align-items: center; justify-content: center; color: white;
+            flex-shrink: 0;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.7); }
+            70% { box-shadow: 0 0 0 20px rgba(99, 102, 241, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+        }
+        .hidden { display: none !important; }
+        .file-item {
+            background: white;
+            padding: 10px 15px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border: 1px solid #e5e7eb;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="auth-section">
+        <input type="text" id="username" class="auth-input" placeholder="User" value="admin" style="width: 100px;">
+        <input type="password" id="password" class="auth-input" placeholder="Pass" value="admin" style="width: 100px;">
+        <button id="authBtn" class="btn-icon" title="Login">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+        </button>
+        <div id="userInfo" class="hidden" style="font-weight: 600; font-size: 14px;">
+            Admin <span onclick="logout()" style="color: var(--danger-color); cursor: pointer; margin-left: 5px;">(Exit)</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Left Panel: Controls -->
+        <div class="card">
+            <div class="card-header">
+                <h2>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+                    Управление
+                </h2>
+            </div>
+            <div class="card-body">
+                <div class="tabs">
+                    <div class="tab active" onclick="switchTab('file')">Файл</div>
+                    <div class="tab" onclick="switchTab('project')">Проект</div>
+                    <div class="tab" onclick="switchTab('history')">История</div>
+                </div>
+
+                <!-- File Upload -->
+                <div id="file-tab-content">
+                    <div class="upload-area" id="dropZone">
+                        <svg class="upload-icon-lg" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                        </svg>
+                        <h3 style="margin-bottom: 5px;">Drag & Drop</h3>
+                        <p style="color: var(--text-light); font-size: 14px;">.py или .pdf файл</p>
+                        <input type="file" id="fileInput" style="display: none;" accept=".py,.pdf,.txt">
+                    </div>
+                    <div id="filePreview" class="hidden" style="margin-bottom: 20px;"></div>
+                    <button id="uploadBtn" class="btn" disabled>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                        Анализировать
+                    </button>
+                </div>
+
+                <!-- Project Scan -->
+                <div id="project-tab-content" class="hidden">
+                    <div class="form-group">
+                        <label style="display:block; margin-bottom:8px; font-weight:500;">Имя проекта</label>
+                        <input type="text" id="projectName" class="form-control" placeholder="Например: my-django-app">
+                        <p style="font-size: 12px; color: var(--text-light); margin-top: 5px;">Папка: <code>~/PycharmProjects/</code></p>
+                    </div>
+                    <button id="scanBtn" class="btn">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        Сканировать проект
+                    </button>
+                </div>
+
+                <!-- History (Admin Panel Lite) -->
+                <div id="history-tab-content" class="hidden">
+                    <button class="btn" onclick="loadHistory()" style="margin-bottom: 15px; background-color: var(--secondary-color);">
+                        Обновить список
+                    </button>
+                    <div id="historyList" class="history-list">
+                        <p style="text-align:center; color: #999;">Нажмите обновить для загрузки</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel: Output -->
+        <div class="card">
+            <div class="card-header">
+                <h2>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+                    Отчет Mistral AI
+                </h2>
+            </div>
+            <div class="card-body" id="resultsContainer">
+                <div id="emptyState" style="height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--text-light);">
+                    <h3>Нет данных</h3>
+                    <p>Выберите файл или проект для анализа</p>
+                </div>
+                <div id="loadingState" class="loading-container hidden">
+                    <div class="ai-brain">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2 2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/><path d="M12 22a2 2 0 0 1 2-2v-2a2 2 0 0 1-2-2 2 2 0 0 1-2 2v2a2 2 0 0 1 2 2z"/><path d="M2 12a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2 2 2 0 0 1-2 2H4a2 2 0 0 1-2-2z"/><path d="M22 12a2 2 0 0 1-2-2h-2a2 2 0 0 1-2 2 2 2 0 0 1 2 2h2a2 2 0 0 1 2-2z"/><path d="M4.93 4.93a2 2 0 0 1 2.83 0l1.41 1.41a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0L4.93 7.76a2 2 0 0 1 0-2.83z"/><path d="M19.07 19.07a2 2 0 0 1-2.83 0l-1.41-1.41a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l1.41 1.41a2 2 0 0 1 0 2.83z"/><path d="M19.07 4.93a2 2 0 0 1 0 2.83l-1.41 1.41a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l1.41-1.41a2 2 0 0 1 2.83 0z"/><path d="M4.93 19.07a2 2 0 0 1 0-2.83l1.41-1.41a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-1.41 1.41a2 2 0 0 1-2.83 0z"/></svg>
+                    </div>
+                    <h3>Mistral думает...</h3>
+                </div>
+                <div id="markdownContent" class="markdown-body hidden"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '';
+
+        let token = localStorage.getItem('access_token') || null;
+        let selectedFile = null;
+
+        function updateAuthUI() {
+            const authInputs = document.querySelectorAll('.auth-input');
+            const authBtn = document.getElementById('authBtn');
+            const userInfo = document.getElementById('userInfo');
+            if (token) {
+                authInputs.forEach(el => el.classList.add('hidden'));
+                authBtn.classList.add('hidden');
+                userInfo.classList.remove('hidden');
+                loadHistory();
+            } else {
+                authInputs.forEach(el => el.classList.remove('hidden'));
+                authBtn.classList.remove('hidden');
+                userInfo.classList.add('hidden');
+            }
+        }
+
+        document.getElementById('authBtn').addEventListener('click', async () => {
+            const u = document.getElementById('username').value;
+            const p = document.getElementById('password').value;
+            try {
+                const fd = new FormData();
+                fd.append('username', u);
+                fd.append('password', p);
+                const res = await fetch(`${API_BASE}/token`, { method: 'POST', body: fd });
+                if (res.ok) {
+                    const data = await res.json();
+                    token = data.access_token;
+                    localStorage.setItem('access_token', token);
+                    updateAuthUI();
+                } else {
+                    alert('Ошибка входа: неверный логин или пароль');
+                }
+            } catch (e) {
+                console.error(e);
+                alert('Ошибка соединения с сервером.');
+            }
+        });
+
+        window.logout = () => {
+            token = null;
+            localStorage.removeItem('access_token');
+            updateAuthUI();
+            document.getElementById('markdownContent').classList.add('hidden');
+            document.getElementById('emptyState').classList.remove('hidden');
+        };
+
+        window.switchTab = (tab) => {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            const tabIndex = tab === 'file' ? 0 : tab === 'project' ? 1 : 2;
+            document.querySelectorAll('.tab')[tabIndex].classList.add('active');
+
+            document.getElementById('file-tab-content').classList.toggle('hidden', tab !== 'file');
+            document.getElementById('project-tab-content').classList.toggle('hidden', tab !== 'project');
+            document.getElementById('history-tab-content').classList.toggle('hidden', tab !== 'history');
+        };
+
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const uploadBtn = document.getElementById('uploadBtn');
+
+        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+        });
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) handleFile(e.target.files[0]);
+        });
+
+        function handleFile(file) {
+            selectedFile = file;
+            document.getElementById('filePreview').innerHTML = `
+                <div class="file-item">
+                    <span>${file.name}</span>
+                    <span style="color:var(--text-light)">${(file.size/1024).toFixed(1)} KB</span>
+                </div>`;
+            document.getElementById('filePreview').classList.remove('hidden');
+            dropZone.classList.add('hidden');
+            uploadBtn.disabled = false;
+        }
+
+        uploadBtn.addEventListener('click', async () => {
+            if (!token) return alert('Сначала войдите в систему!');
+            if (!selectedFile) return;
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+            await sendRequest(`${API_BASE}/api/upload-and-review`, formData);
+        });
+
+        document.getElementById('scanBtn').addEventListener('click', async () => {
+            if (!token) return alert('Сначала войдите в систему!');
+            const projectName = document.getElementById('projectName').value;
+            if (!projectName) return alert('Введите имя проекта');
+            const formData = new FormData();
+            formData.append('project_name', projectName);
+            await sendRequest(`${API_BASE}/api/scan-local-project`, formData);
+        });
+
+        async function loadHistory() {
+            if (!token) return;
+            const listEl = document.getElementById('historyList');
+            listEl.innerHTML = '<p style="text-align:center">Загрузка...</p>';
+
+            try {
+                const res = await fetch(`${API_BASE}/api/reports`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (res.ok) {
+                    const reports = await res.json();
+                    listEl.innerHTML = '';
+                    if(reports.length === 0) listEl.innerHTML = '<p style="text-align:center">История пуста</p>';
+
+                    reports.forEach(r => {
+                        const item = document.createElement('div');
+                        item.className = 'history-item';
+                        item.innerHTML = `
+                            <div class="history-title">${r.project_name} / ${r.file_path.split('/').pop()}</div>
+                            <div class="history-meta">
+                                <span>${new Date(r.created_at).toLocaleString()}</span>
+                                <span class="status-badge">${r.status}</span>
+                            </div>
+                        `;
+                        item.onclick = () => {
+                            document.getElementById('markdownContent').classList.remove('hidden');
+                            document.getElementById('emptyState').classList.add('hidden');
+                            document.getElementById('markdownContent').innerHTML = marked.parse(r.review_result);
+                            document.querySelectorAll('pre code').forEach((block) => hljs.highlightElement(block));
+                        };
+                        listEl.appendChild(item);
+                    });
+                } else {
+                    listEl.innerHTML = '<p style="text-align:center; color:red">Ошибка загрузки</p>';
+                }
+            } catch(e) {
+                listEl.innerHTML = '<p style="text-align:center; color:red">Ошибка сети</p>';
+            }
+        }
+
+        async function sendRequest(url, body) {
+            const loading = document.getElementById('loadingState');
+            const empty = document.getElementById('emptyState');
+            const content = document.getElementById('markdownContent');
+
+            empty.classList.add('hidden');
+            content.classList.add('hidden');
+            loading.classList.remove('hidden');
+
+            try {
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` },
+                    body: body
+                });
+
+                const data = await res.json();
+                loading.classList.add('hidden');
+
+                if (res.ok) {
+                    content.classList.remove('hidden');
+                    const text = typeof data.review === 'string' ? data.review : JSON.stringify(data, null, 2);
+                    content.innerHTML = marked.parse(text);
+                    document.querySelectorAll('pre code').forEach((block) => hljs.highlightElement(block));
+
+                    if(!document.getElementById('history-tab-content').classList.contains('hidden')){
+                        loadHistory();
+                    }
+
+                    if(url.includes('upload')) {
+                        selectedFile = null;
+                        dropZone.classList.remove('hidden');
+                        document.getElementById('filePreview').classList.add('hidden');
+                        uploadBtn.disabled = true;
+                    }
+                } else {
+                    content.classList.remove('hidden');
+                    content.innerHTML = `<h3 style="color:red">Ошибка: ${data.detail || 'Неизвестная ошибка'}</h3>`;
+                }
+
+            } catch (e) {
+                loading.classList.add('hidden');
+                content.classList.remove('hidden');
+                content.innerHTML = `<h3 style="color:red">Ошибка сети: ${e.message}</h3>`;
+            }
+        }
+
+        updateAuthUI();
+    </script>
+</body>
+</html>

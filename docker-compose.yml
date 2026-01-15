@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  # --- Сервис 1: FastAPI (AI Agent API) ---
+  app:
+    build: .
+    container_name: ai_reviewer_fastapi
+    ports:
+      - "8000:8000"
+    volumes:
+      # Пробрасываем базу, чтобы оба контейнера видели её
+      - ./database.db:/app/database.db
+      # Если нужно, чтобы Агент видел папку с проектами:
+      # - ~/PycharmProjects:/app/PycharmProjects
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # --- Сервис 2: Django Admin Panel ---
+  admin:
+    build: .
+    container_name: ai_reviewer_admin
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./database.db:/app/database.db
+      - ./static_root:/app/admin_panel/static_root # Для статических файлов
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - app
+    command: python admin_panel/manage.py runserver 0.0.0.0:8080
+
+# Volumes для персистентности данных
+volumes:
+  database_data:
