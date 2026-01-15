@@ -101,7 +101,7 @@
 
 #### Клонирование и установка
 ```bash
-git clone <repo_url>
+git clone https://github.com/Artem7898/ai_code_reviewer
 cd ai_code_reviewer
 pip install -r requirements.txt
 # Важно: pip install django-unfold python-dotenv
