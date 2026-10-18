@@ -49,7 +49,7 @@ jobs:
           uv run --frozen mypy scripts/protect_branch.py --strict
           PYTHONPATH=admin_panel:. uv run --frozen mypy --config-file admin_panel/mypy.ini
       - name: API, security and concurrency tests
-        run: uv run --frozen pytest -q
+        run: uv run --frozen python -m pytest -q
       - name: Initialize shared database
         run: |
           uv run --frozen python -m app.cli init-db

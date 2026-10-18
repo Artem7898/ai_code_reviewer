@@ -123,6 +123,18 @@ async def test_ruff_is_bounded_and_reports_undefined_names(settings):
     assert "RUFF-F821" in {item.rule_id for item in result.findings}
 
 
+async def test_ruff_accepts_python314_deferred_self_annotations(settings):
+    settings.ruff_enabled = True
+    source = SourceFile(
+        path="provider.py",
+        content=(
+            "class Provider:\n    async def __aenter__(self) -> Provider:\n        return self\n"
+        ),
+    )
+    result = await ReviewAnalyzer(settings).review([source])
+    assert result.findings == []
+
+
 async def test_proposal_generates_patch_without_touching_files(settings, tmp_path):
     settings.ai_provider = "ollama"
     proposal = {

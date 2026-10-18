@@ -111,6 +111,8 @@ uv run --frozen python -m app.review_cli ./projects/my_project \
   --base-ref HEAD~1 --provider static --output review.json --sarif review.sarif
 ```
 
+Статический workflow допускает до 1 000 000 байт исходников за ревью. Локальный и API-лимит по умолчанию — 200 000 байт. При превышении заданного лимита анализ останавливается без частичного отчёта.
+
 Workflow `.github/workflows/review.yml` анализирует diff pull request без модели и публикует JSON/SARIF как артефакты сборки. Он не отправляет исходники внешнему LLM и не выполняет анализируемый код. Загрузка SARIF в GitHub Code Scanning при необходимости настраивается отдельно с соответствующим разрешением `security-events: write`.
 
 ## Конфигурация
@@ -147,7 +149,7 @@ Workflow `.github/workflows/review.yml` анализирует diff pull request
 uv run --frozen ruff check .
 uv run --frozen mypy
 PYTHONPATH=admin_panel:. uv run --frozen mypy --config-file admin_panel/mypy.ini
-uv run --frozen pytest -q
+uv run --frozen python -m pytest -q
 uv run --frozen python admin_panel/manage.py check
 uv run --frozen python admin_panel/manage.py test core --noinput
 uv run --frozen python -m app.evaluate
@@ -156,7 +158,7 @@ uv run --frozen pip-audit --require-hashes --no-deps -r requirements.txt
 
 Mypy работает в строгом режиме для `app` и отдельно для Django с django-stubs. Набор тестов проверяет аутентификацию, границы файлового доступа, обработку сбоев провайдера, изоляцию владельцев и конкурирующих worker. Benchmark использует небольшой размеченный набор регрессий AST; его precision/recall характеризуют только этот набор и не измеряют качество LLM.
 
-Проверка настоящей Docker-песочницы запускается отдельно: после загрузки `python:3.14.8-slim` выполните `RUN_DOCKER_TESTS=1 uv run --frozen pytest -q tests/test_sandbox.py`. Она проверяет отключённую сеть, непривилегированного пользователя, отсутствие наследования секретов, исходники только для чтения и завершение по таймауту. Основной CI не требует доступного Docker daemon.
+Проверка настоящей Docker-песочницы запускается отдельно: после загрузки `python:3.14.8-slim` выполните `RUN_DOCKER_TESTS=1 uv run --frozen python -m pytest -q tests/test_sandbox.py`. Она проверяет отключённую сеть, непривилегированного пользователя, отсутствие наследования секретов, исходники только для чтения и завершение по таймауту. Основной CI не требует доступного Docker daemon.
 
 `requirements.txt` — экспорт runtime-зависимостей с хешами для инструментов, которым нужен pip. Обновление зависимостей выполняется осознанно:
 

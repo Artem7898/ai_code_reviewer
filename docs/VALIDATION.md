@@ -6,7 +6,7 @@ Local validation was performed on **18 October 2026**, using CPython **3.14.8** 
 
 | Check | Result |
 | --- | --- |
-| `RUN_DOCKER_TESTS=1 python -m pytest -q` | **174 passed**, 20.50 s, including real Docker isolation, timeout cleanup, and 12 branch-protection helper tests |
+| `RUN_DOCKER_TESTS=1 python -m pytest -q` | **175 passed**, 23.78 s, including real Docker isolation, timeout cleanup, and 12 branch-protection helper tests |
 | `python admin_panel/manage.py test core --noinput` | **8 tests, OK**, using a separate test database |
 | `ruff check .` | Passed |
 | `ruff format --check .` | 59 Python files formatted |
@@ -37,6 +37,7 @@ Run Django tests from the repository root with the explicit `core` label, as CI 
 - Bounded HTTP bodies, chunked requests, total deadlines, slow-drip uploads, released ingress slots, and bounded login-limiter state.
 - Job lists exclude large payload/result documents. Full results are fetched separately and are not downloaded again on every UI poll.
 - Provider failures, malformed JSON, schemas, paths, line ranges, evidence, retries, and HTTP-client cleanup, without real external model calls.
+- Isolated Ruff uses the explicit Python 3.14 target and accepts deferred self annotations. Provider tests select their backend independently of ambient `AI_PROVIDER`.
 - Git clean filters do not execute: review uses raw Git objects, bounded reads, and content hashes.
 - PDF parsing runs in a resource-limited subprocess. Generated Python executes only in a constrained container.
 
@@ -47,8 +48,10 @@ The Compose smoke test exercised **HTTP → SQLite job → separate worker → f
 Validated local image: `ai-code-reviewer:modernization-check`.
 
 ```text
-sha256:c0648494e146971ea125e2c6dab8e741b1b406e5ea5801487c869424ae21f814
+sha256:254f3269cc6e0eace4713a56beca436b660eaf88f47f636b6b216abef1a17b6e
 ```
+
+The image was rebuilt and its 39 runtime source files rechecked after the final Ruff correction. The 19 Compose checks were run on the preceding build with the same container and dependency configuration; they were not repeated after this analyzer change.
 
 ## Performance and evidence limits
 

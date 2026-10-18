@@ -21,7 +21,11 @@ from app.settings import Settings
 @pytest.fixture
 def settings(tmp_path):
     return Settings(
-        _env_file=None, data_dir=tmp_path, secret_key=SecretStr("r" * 64), ai_max_retries=0
+        _env_file=None,
+        data_dir=tmp_path,
+        secret_key=SecretStr("r" * 64),
+        ai_provider="ollama",
+        ai_max_retries=0,
     )
 
 

@@ -21,6 +21,8 @@ jobs:
     env:
       ENVIRONMENT: test
       AI_PROVIDER: static
+      # Bound static CI reviews while allowing repository-wide modernization diffs.
+      MAX_REVIEW_CHARS: 1000000
       REVIEW_BASE_REF: ${{ github.event.pull_request.base.sha || inputs.base_ref }}
     steps:
       - name: Configure temporary runtime paths

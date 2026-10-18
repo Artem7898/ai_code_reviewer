@@ -220,6 +220,8 @@ async def _ruff(files: Sequence[SourceFile]) -> list[Finding]:
             "ruff",
             "check",
             "--isolated",
+            "--target-version",
+            "py314",
             "--no-cache",
             "--output-format",
             "json",

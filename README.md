@@ -120,6 +120,8 @@ uv run --frozen python -m app.review_cli ./projects/my_project \
 
 The CLI supports `static` and `ollama` providers. Cloud reviews use the authenticated worker API and its durable budget.
 
+The static review workflow accepts up to 1,000,000 source bytes per review. Local and API defaults remain 200,000 bytes. Reviews above the configured limit stop without a partial report.
+
 The `.github/workflows/review.yml` workflow reviews pull-request diffs without a model and uploads JSON/SARIF as workflow artifacts. It does not send source code to an external LLM or execute the reviewed code. GitHub Code Scanning upload is a separate integration that requires the appropriate `security-events: write` permission.
 
 ## Configuration
@@ -162,7 +164,7 @@ This removes their snapshots, results, and artifacts while preserving report his
 uv run --frozen ruff check .
 uv run --frozen mypy
 PYTHONPATH=admin_panel:. uv run --frozen mypy --config-file admin_panel/mypy.ini
-uv run --frozen pytest -q
+uv run --frozen python -m pytest -q
 uv run --frozen python admin_panel/manage.py check
 uv run --frozen python admin_panel/manage.py test core --noinput
 uv run --frozen python -m app.evaluate
@@ -174,7 +176,7 @@ Mypy runs in strict mode for `app` and separately for Django with django-stubs. 
 To run the real Docker sandbox integration tests, preload `python:3.14.8-slim`, then run:
 
 ```bash
-RUN_DOCKER_TESTS=1 uv run --frozen pytest -q tests/test_sandbox.py
+RUN_DOCKER_TESTS=1 uv run --frozen python -m pytest -q tests/test_sandbox.py
 ```
 
 These checks cover disabled networking, an unprivileged user, no inherited secrets, read-only source access, and timeout cleanup. The main CI suite does not require a Docker daemon.
