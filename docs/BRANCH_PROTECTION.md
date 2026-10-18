@@ -23,8 +23,12 @@ before relying on this workflow for a repository maintained by one person.
 ## Inspect and apply
 
 Use Python 3.14 and an installed, authenticated GitHub CLI (`gh`) whose account
-has repository administrator permissions. Do not put a token into the command,
-repository, or a chat message. HTTPS access to `api.github.com` is required.
+has repository administrator permissions. The GitHub App installation or
+fine-grained access token used by the CLI also needs repository **Administration:
+read** to inspect protection and **Administration: write** to change it. Account
+administrator status alone does not grant these permissions to an integration.
+Do not put a token into the command, repository, or a chat message. HTTPS access
+to `api.github.com` is required.
 
 ```bash
 # Read repository metadata and existing policy, then print the merged proposal.
@@ -44,18 +48,27 @@ discarding them. Existing signed-commit requirements use a separate GitHub API;
 the helper leaves them unchanged and verifies they survived. Repository rulesets
 and merge settings are not changed.
 
+During publication, the API was reachable and repository metadata reported
+administrator access. Branch metadata confirmed `protected: false`, but both
+reading `branches/master/protection` and attempting to apply the committed policy
+returned HTTP 403, `Resource not accessible by integration`. For the read request,
+GitHub identified the required permission as `administration=read` in
+`X-Accepted-GitHub-Permissions`. The current integration cannot inspect or apply
+protection, and the attempt did not enable it. Securely reauthorize the GitHub
+integration with Administration read/write access to this repository, or use the
+manual Settings route below. Supply credentials only through the platform's secure
+authorization or environment settings, then rerun inspection before `--apply`.
+
 If API access is blocked, enable `api.github.com` in the cloud environment network
 settings, save/apply those settings, and retry. A draft allowlist change does not
 prove that the running machine can reach the API. A failed read sends no policy
 update, and a JSON file or dry-run output is not evidence that protection is active.
-The current API connectivity must be verified in the environment where this helper
-is executed; the cloud instance used for initial publication blocked API access.
 
 As an alternative, an administrator can open GitHub **Settings → Branches → Add
 classic branch protection rule**, select `master`, and configure the requirements
 above. Check the result through GitHub and rerun the inspection command when API
-access is available. Repository visibility, account plan and organization policy
-can affect which protection features GitHub permits.
+access and integration permissions are available. Repository visibility, account
+plan and organization policy can affect which protection features GitHub permits.
 
 Run the `validate` workflow at least once so GitHub can identify its check name.
 After protection is enabled, submit future changes through pull requests. Review
