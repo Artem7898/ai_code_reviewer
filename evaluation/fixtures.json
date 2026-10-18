@@ -1,0 +1,10 @@
+[
+  {"name":"syntax_error","code":"def broken(:\n    pass\n","expected_rules":["PY-SYNTAX"]},
+  {"name":"eval_input","code":"def calculate(expression: str):\n    return eval(expression)\n","expected_rules":["PY-UNSAFE-EVAL"]},
+  {"name":"exec_input","code":"def execute(source: str):\n    exec(source)\n","expected_rules":["PY-UNSAFE-EXEC"]},
+  {"name":"shell_input","code":"import subprocess\ndef execute(command: str):\n    return subprocess.run(command, shell=True)\n","expected_rules":["PY-SHELL-TRUE"]},
+  {"name":"clean_sum","code":"def total(values: list[int]) -> int:\n    return sum(values)\n","expected_rules":[]},
+  {"name":"safe_literal","code":"import ast\ndef parse(value: str):\n    return ast.literal_eval(value)\n","expected_rules":[]},
+  {"name":"safe_process","code":"import subprocess\ndef version():\n    return subprocess.run(['python', '--version'], shell=False, check=True)\n","expected_rules":[]},
+  {"name":"security_words_are_data","code":"DESCRIPTION = 'eval(user_input), exec(code), shell=True'\n","expected_rules":[]}
+]

@@ -1,0 +1,53 @@
+name: Review changed code
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: Git revision to compare with HEAD
+        required: true
+        default: HEAD~1
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  static-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ENVIRONMENT: test
+      AI_PROVIDER: static
+      DATA_DIR: ${{ runner.temp }}/review-data
+      REVIEW_BASE_REF: ${{ github.event.pull_request.base.sha || inputs.base_ref }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version-file: .python-version
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: 0.13.1
+          enable-cache: true
+      - run: |
+          uv lock --check
+          uv sync --frozen --no-dev
+      - name: Review diff without executing submitted code
+        run: >-
+          uv run --frozen --no-dev python -m app.review_cli .
+          --base-ref "$REVIEW_BASE_REF" --provider static
+          --output review.json --sarif review.sarif
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: code-review
+          path: |
+            review.json
+            review.sarif
+          if-no-files-found: error
+          retention-days: 14

@@ -1,62 +1,128 @@
-from datetime import datetime, timedelta
-from typing import Optional
-from jose import JWTError, jwt
-from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from sqlmodel import Session, select
-import os
-from dotenv import load_dotenv # 1. Импортируем
+"""Argon2 password hashing and narrowly scoped, expiring JWT credentials."""
 
-# 2. Загружаем .env
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+from __future__ import annotations
 
-from .db import get_session
+import asyncio
+import secrets
+import threading
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+
+import jwt
+from jwt import InvalidTokenError
+from pwdlib import PasswordHash
+from pwdlib.exceptions import UnknownHashError
+from pwdlib.hashers.argon2 import Argon2Hasher
+from pwdlib.hashers.bcrypt import BcryptHasher
+
 from .models import User
+from .settings import Settings
 
-# 3. Берем ключ из окружения
-SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-key")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 300
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+# Bcrypt remains verification-only for preserved legacy credentials. New hashes use
+# Argon2id with OWASP's memory setting; bound concurrent hashes to cap memory usage.
+_password_hash = PasswordHash(
+    (Argon2Hasher(memory_cost=19456, time_cost=2, parallelism=1), BcryptHasher())
+)
+_hash_slots = threading.BoundedSemaphore(2)
 
 
-def get_password_hash(password):
-    return pwd_context.hash(password)
+def _hash_password(password: str) -> str:
+    with _hash_slots:
+        return _password_hash.hash(password)
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+async def hash_password(password: str) -> str:
+    if not 12 <= len(password) <= 1024:
+        raise ValueError("Password must contain between 12 and 1024 characters")
+    return await asyncio.to_thread(_hash_password, password)
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme), session: Session = Depends(get_session)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+def _verify_password(password: str, hashed_password: str) -> bool:
+    if not password or len(password) > 1024:
+        return False
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+        with _hash_slots:
+            return _password_hash.verify(password, hashed_password)
+    except UnknownHashError, ValueError, TypeError:
+        return False
 
-    user = session.exec(select(User).where(User.username == username)).first()
-    if user is None:
-        raise credentials_exception
-    return user
+
+async def verify_password(password: str, hashed_password: str) -> bool:
+    return await asyncio.to_thread(_verify_password, password, hashed_password)
+
+
+def _verify_and_update_password(password: str, hashed_password: str) -> tuple[bool, str | None]:
+    if not password or len(password) > 1024:
+        return False, None
+    try:
+        with _hash_slots:
+            return _password_hash.verify_and_update(password, hashed_password)
+    except UnknownHashError, ValueError, TypeError:
+        return False, None
+
+
+async def verify_and_update_password(
+    password: str, hashed_password: str
+) -> tuple[bool, str | None]:
+    """Upgrade successfully verified legacy bcrypt hashes to Argon2id."""
+    return await asyncio.to_thread(_verify_and_update_password, password, hashed_password)
+
+
+async def dummy_password_hash() -> str:
+    """Prepare once during lifespan and verify it for unknown usernames."""
+    return await hash_password(secrets.token_urlsafe(32))
+
+
+def _secret(settings: Settings) -> str:
+    if settings.secret_key is None:
+        raise ValueError("Signing key has not been configured")
+    return settings.secret_key.get_secret_value()
+
+
+def create_access_token(user: User, settings: Settings) -> str:
+    if user.id is None or not user.is_active or user.auth_revision < 1:
+        raise ValueError("Tokens require an active, persisted user")
+    now = datetime.now(UTC)
+    return jwt.encode(
+        {
+            "sub": str(user.id),
+            "ver": user.auth_revision,
+            "iat": now,
+            "nbf": now,
+            "exp": now + timedelta(minutes=settings.access_token_expire_minutes),
+            "iss": settings.jwt_issuer,
+            "aud": settings.jwt_audience,
+            "jti": secrets.token_urlsafe(16),
+        },
+        _secret(settings),
+        algorithm="HS256",
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class TokenIdentity:
+    user_id: int
+    auth_revision: int
+
+
+def decode_identity(token: str, settings: Settings) -> TokenIdentity:
+    payload = jwt.decode(
+        token,
+        _secret(settings),
+        algorithms=["HS256"],
+        audience=settings.jwt_audience,
+        issuer=settings.jwt_issuer,
+        options={"require": ["sub", "ver", "exp", "iat", "nbf", "iss", "aud", "jti"]},
+    )
+    subject = payload.get("sub")
+    if not isinstance(subject, str) or not subject.isdecimal() or int(subject) < 1:
+        raise InvalidTokenError("Invalid token subject")
+    revision = payload.get("ver")
+    if type(revision) is not int or revision < 1:
+        raise InvalidTokenError("Invalid token authorization revision")
+    return TokenIdentity(int(subject), revision)
+
+
+def decode_access_token(token: str, settings: Settings) -> int:
+    """Decode the subject; request authentication must also compare auth_revision."""
+    return decode_identity(token, settings).user_id

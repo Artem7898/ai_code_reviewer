@@ -1,0 +1,65 @@
+name: Python 3.14 checks
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ENVIRONMENT: test
+      AI_PROVIDER: static
+      DATA_DIR: ${{ runner.temp }}/reviewer-data
+      DATABASE_PATH: ${{ runner.temp }}/reviewer.sqlite3
+      PROJECTS_ROOT: ${{ github.workspace }}/projects
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version-file: .python-version
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: 0.13.1
+          enable-cache: true
+      - name: Install locked dependencies
+        run: |
+          uv lock --check
+          uv sync --frozen
+      - name: Lint and strict type check
+        run: |
+          uv run --frozen ruff check .
+          uv run --frozen ruff format --check .
+          uv run --frozen mypy
+          uv run --frozen mypy scripts/protect_branch.py --strict
+          PYTHONPATH=admin_panel:. uv run --frozen mypy --config-file admin_panel/mypy.ini
+      - name: API, security and concurrency tests
+        run: uv run --frozen pytest -q
+      - name: Initialize shared database
+        run: |
+          uv run --frozen python -m app.cli init-db
+          uv run --frozen python admin_panel/manage.py migrate --noinput
+          uv run --frozen python admin_panel/manage.py collectstatic --noinput
+      - name: Django checks and tests
+        run: |
+          uv run --frozen python admin_panel/manage.py check
+          uv run --frozen python admin_panel/manage.py test core --noinput
+      - name: Deterministic quality benchmark
+        run: uv run --frozen python -m app.evaluate
+      - name: Audit locked runtime packages
+        run: |
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt --output-file /tmp/runtime-requirements.txt
+          uv run --frozen pip-audit --require-hashes --no-deps -r /tmp/runtime-requirements.txt

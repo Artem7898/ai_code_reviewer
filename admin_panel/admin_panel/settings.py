@@ -1,30 +1,20 @@
-"""
-Django settings for admin_panel project.
-"""
-import os
+"""Administration settings shared with the API's validated configuration."""
+
 from pathlib import Path
-from dotenv import load_dotenv
 
-# Загружаем переменные из .env (ищет в корне проекта)
-load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
+from django.urls import reverse_lazy
 
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
+from app.settings import get_settings
+
+config = get_settings()
 BASE_DIR = Path(__file__).resolve().parent.parent
-
-# SECURITY WARNING: keep the secret key used in production secret!
-#  Берем ключ из .env, если нет - дефолтное значение
-SECRET_KEY = os.environ.get("SECRET_KEY", "django-insecure-fallback-key")
-
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
-ALLOWED_HOSTS = []
-
-
-# Application definition
+if config.secret_key is None:
+    raise RuntimeError("Validated settings must provide a signing key")
+SECRET_KEY = config.secret_key.get_secret_value()
+DEBUG = config.django_debug
+ALLOWED_HOSTS = config.allowed_hosts
 
 INSTALLED_APPS = [
-    # Unfold приложения
     "unfold",
     "unfold.contrib.filters",
     "unfold.contrib.forms",
@@ -36,9 +26,9 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "core",
 ]
-
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -46,9 +36,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
-
 ROOT_URLCONF = "admin_panel.urls"
-
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
@@ -63,92 +51,84 @@ TEMPLATES = [
         },
     },
 ]
-
 WSGI_APPLICATION = "admin_panel.wsgi.application"
-
-
-# Database
+ASGI_APPLICATION = "admin_panel.asgi.application"
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': '../database.db', # Общая БД
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": config.database_path,
+        "OPTIONS": {"timeout": 20},
     }
 }
-
-# Password validation
 AUTH_PASSWORD_VALIDATORS = [
-    {
-        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
-    },
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
-
-# Internationalization
 LANGUAGE_CODE = "ru-ru"
 TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+STATIC_URL = "/static/"
+STATIC_ROOT = config.data_dir / "django-static"
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
+LOGIN_URL = "admin:login"
+LOGIN_REDIRECT_URL = "/stats/"
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Strict"
+CSRF_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SAMESITE = "Strict"
+SESSION_COOKIE_SECURE = config.environment == "production"
+CSRF_COOKIE_SECURE = config.environment == "production"
+SECURE_SSL_REDIRECT = config.environment == "production"
+SECURE_REDIRECT_EXEMPT = [r"^healthz$"]
+SECURE_HSTS_SECONDS = 31_536_000 if config.environment == "production" else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = config.environment == "production"
+SECURE_HSTS_PRELOAD = config.environment == "production"
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "same-origin"
+X_FRAME_OPTIONS = "DENY"
 
-# Static files (CSS, JavaScript, Images)
-STATIC_URL = "static/"
-STATIC_ROOT = os.path.join(BASE_DIR, 'static_root')
-
-# --- НАСТРОЙКИ DJANGO-UNFOLD ---
+# Current Unfold uses separate THEME and COLORS keys and Django URL names.
 UNFOLD = {
-    "SITE_HEADER": "AI Code Reviewer Admin",
+    "SITE_HEADER": "AI Code Reviewer",
     "SITE_TITLE": "AI Reviewer",
-    "SITE_INDEX_TITLE": "Dashboard",
-
-    # Настройка темы
-    "THEME": {
-        "COLORS": {
-            "primary": {
-                "50": "#eef2ff",
-                "100": "#e0e7ff",
-                "200": "#c7d2fe",
-                "300": "#a5b4fc",
-                "400": "#818cf8",
-                "500": "#6366f1",
-                "600": "#4f46e5",
-                "700": "#4338ca",
-                "800": "#3730a3",
-                "900": "#312e81",
-            }
-        },
-        "TOGGLE_SIDEBAR": True,
-    },
-
+    "SITE_SUBHEADER": "Отчёты и доступ",
+    "THEME": "light",
+    "SHOW_HISTORY": False,
     "SIDEBAR": {
-        "search": True,
+        "show_search": True,
         "navigation": [
             {
-                "title": "Отчеты AI",
+                "title": "Ревью кода",
                 "items": [
                     {
-                        "title": "Все отчеты",
-                        "icon": "document-text",
-                        "model": "core.ReviewReport"
+                        "title": "Отчёты",
+                        "icon": "description",
+                        "link": reverse_lazy("admin:core_reviewreport_changelist"),
                     },
-                ]
+                    {
+                        "title": "История",
+                        "icon": "history",
+                        "link": reverse_lazy("report_list"),
+                    },
+                ],
             },
             {
                 "title": "Система",
                 "items": [
                     {
-                        "title": "Пользователи",
-                        "icon": "users",
-                        "model": "auth.User"
+                        "title": "Пользователи Django",
+                        "icon": "group",
+                        "link": reverse_lazy("admin:auth_user_changelist"),
                     }
-                ]
-            }
-        ]
-    }
+                ],
+            },
+        ],
+    },
 }

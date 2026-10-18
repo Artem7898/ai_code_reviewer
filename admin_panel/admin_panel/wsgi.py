@@ -8,8 +8,12 @@ https://docs.djangoproject.com/en/6.0/howto/deployment/wsgi/
 """
 
 import os
+import sys
+from pathlib import Path
+
 from django.core.wsgi import get_wsgi_application
 
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "admin_panel.settings")
 
 application = get_wsgi_application()

@@ -1,0 +1,10 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.6; }
+body { margin: 0; background: light-dark(#f5f7fb, #121722); color: light-dark(#1c293a, #e3e9f1); }
+main { max-width: 1100px; margin: auto; padding: 2rem 1rem; }
+header, nav { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+article { background: light-dark(#fff, #1b2333); padding: 1.5rem; border: 1px solid light-dark(#d7e0eb, #35445e); border-radius: .75rem; margin: 1.25rem 0; }
+h1 { font-size: 1.8rem; } h2 { font-size: 1.2rem; margin: 0; }
+a { color: light-dark(#354ab5, #b2bcff); } summary { cursor: pointer; }
+.meta { color: light-dark(#536177, #a8b5c9); font-size: .9rem; }
+.path, pre { overflow-wrap: anywhere; white-space: pre-wrap; }
+pre { max-height: 32rem; overflow-y: auto; background: light-dark(#f4f6fb, #101622); border-radius: .5rem; padding: 1rem; }

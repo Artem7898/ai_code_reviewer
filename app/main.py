@@ -1,303 +1,514 @@
-import os
-import shutil
-from typing import List, Optional
-from datetime import datetime
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.security import OAuth2PasswordRequestForm
-from fastapi.templating import Jinja2Templates
-from sqlmodel import Session, select
+"""Authenticated asynchronous API; all analysis runs in a separate worker."""
+
 import asyncio
-from dotenv import load_dotenv # 1. Импортируем
+import hashlib
+import json
+import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Annotated, Literal, cast
+from uuid import uuid4
 
-# 2. Загружаем переменные
-load_dotenv()
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from jwt import InvalidTokenError
+from pydantic import BaseModel
+from sqlmodel import col, select
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .db import init_db, get_session
-from .models import User, ReviewReport
-from .auth import get_current_user, get_password_hash, create_access_token, verify_password
-from .ai_client import (
-    get_code_review_async,
-    generate_clinerules_async,
-    migrate_code_async,
-    generate_tests_async,
-    scaffold_app_async
+from .auth import (
+    create_access_token,
+    decode_identity,
+    dummy_password_hash,
+    verify_and_update_password,
 )
-from .utils import scan_local_project, extract_text_from_pdf, read_project_file, write_project_file
+from .db import Database
+from .http_security import LoginLimiter, RequestBoundary
+from .jobs import JobKind, JobLimitError, JobStore, JSONValue
+from .models import ReviewJob, ReviewReport, User
+from .patches import read_artifacts
+from .schemas import SourceFile
+from .settings import REPOSITORY_ROOT, Settings, get_settings
+from .utils import collect_project, get_project, read_source, read_upload, relative_parts
 
-app = FastAPI(title="AI Agent Engineer API")
+oauth2 = OAuth2PasswordBearer(tokenUrl="token")
 
-# --- НАСТРОЙКИ CORS ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-# 3. Читаем ключ из окружения
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
 
-if not MISTRAL_API_KEY:
-    print("⚠️ ВНИМАНИЕ: MISTRAL_API_KEY не найден в .env!")
 
-BASE_PROJECT_DIR = os.path.expanduser("~/PycharmProjects")
+class JobResponse(BaseModel):
+    id: str
+    kind: str
+    status: str
+    progress: float
+    result: dict[str, JSONValue] | None
+    error: str | None
+    created_at: datetime
+    updated_at: datetime
 
-# --- Startup ---
-@app.on_event("startup")
-def on_startup():
-    init_db()
-    session = next(get_session())
-    # Создаем админа, если нет
-    if not session.exec(select(User).where(User.username == "admin")).first():
-        session.add(User(username="admin", hashed_password=get_password_hash("admin")))
-        session.commit()
-    session.close()
-    # Запускаем Агента
-    asyncio.create_task(autonomous_agent_loop())
 
-# --- Pages ---
-templates = Jinja2Templates(directory="templates")
+@dataclass(frozen=True)
+class Runtime:
+    settings: Settings
+    database: Database
+    jobs: JobStore
+    dummy_hash: str
+    limiter: LoginLimiter
 
-@app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
 
-# --- Auth Endpoints ---
-@app.post("/token")
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), session: Session = Depends(get_session)):
-    user = session.exec(select(User).where(User.username == form_data.username)).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials")
-    access_token = create_access_token(data={"sub": user.username})
-    return {"access_token": access_token, "token_type": "bearer"}
+def runtime(request: Request) -> Runtime:
+    return cast(Runtime, request.app.state.runtime)
 
-# --- NEW: Admin / History Endpoint ---
-@app.get("/api/reports")
-async def get_reports(
-        skip: int = 0,
-        limit: int = 20,
-        current_user: User = Depends(get_current_user),
-        session: Session = Depends(get_session)
-):
-    """Возвращает список всех отчетов (Админ-панель)"""
-    statements = select(ReviewReport).order_by(ReviewReport.id.desc()).offset(skip).limit(limit)
-    reports = session.exec(statements).all()
-    return reports
 
-# --- Работа с файлами (Загрузка и Скан) ---
-
-@app.post("/api/upload-and-review")
-async def upload_and_review(
-        file: UploadFile = File(...),
-        current_user: User = Depends(get_current_user),
-        session: Session = Depends(get_session)
-):
-    temp_path = f"temp_{file.filename}"
+async def current_user(request: Request, token: Annotated[str, Depends(oauth2)]) -> User:
+    state = runtime(request)
     try:
-        with open(temp_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        content = ""
-        content_type = "code"
-
-        if file.filename.endswith(".pdf"):
-            content = extract_text_from_pdf(temp_path)
-            content_type = "pdf"
-        else:
-            with open(temp_path, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
-
-        review_text = await get_code_review_async(content, context=f"File: {file.filename}", api_key=MISTRAL_API_KEY)
-
-        report = ReviewReport(
-            project_name="Uploaded File",
-            file_path=file.filename,
-            content_type=content_type,
-            summary=content[:200] + "...",
-            review_result=review_text,
-            status="completed"
+        identity = decode_identity(token, state.settings)
+    except InvalidTokenError as exc:
+        raise HTTPException(
+            401, "Invalid or expired credentials", headers={"WWW-Authenticate": "Bearer"}
+        ) from exc
+    async with state.database.session() as session:
+        user = await session.get(User, identity.user_id)
+    if user is None or not user.is_active or user.auth_revision != identity.auth_revision:
+        raise HTTPException(
+            401, "Invalid or expired credentials", headers={"WWW-Authenticate": "Bearer"}
         )
-        session.add(report)
-        session.commit()
-        session.refresh(report)
+    return user
 
-        return {"status": "success", "report_id": report.id, "review": review_text}
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
 
-@app.post("/api/scan-local-project")
-async def scan_project(
-        project_name: str = Form(...),
-        current_user: User = Depends(get_current_user),
-        session: Session = Depends(get_session)
-):
-    project_path = os.path.join(BASE_PROJECT_DIR, project_name)
-    if not os.path.exists(project_path):
-        raise HTTPException(status_code=404, detail=f"Project {project_name} not found")
+type ActiveUser = Annotated[User, Depends(current_user)]
 
-    py_files = scan_local_project(project_path)
-    results = []
 
-    for file_path in py_files:
+def _owner(user: User) -> int:
+    if user.id is None:
+        raise HTTPException(401, "Invalid credentials")
+    return user.id
+
+
+def _job_response(job: ReviewJob, *, include_result: bool = True) -> JobResponse:
+    result = (
+        cast(dict[str, JSONValue], json.loads(job.result))
+        if include_result and job.result
+        else None
+    )
+    return JobResponse(
+        id=job.id,
+        kind=job.kind,
+        status=job.status,
+        progress=job.progress,
+        result=result,
+        error=job.error,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+    )
+
+
+async def _enqueue(
+    state: Runtime, user: User, kind: JobKind, payload: dict[str, JSONValue]
+) -> JobResponse:
+    digest = hashlib.sha256(
+        json.dumps({"kind": kind, "payload": payload}, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+    try:
+        job = await state.jobs.enqueue(_owner(user), kind, payload, digest)
+    except JobLimitError as exc:
+        raise HTTPException(429, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(413, "Job input exceeds the configured limit") from exc
+    return _job_response(job)
+
+
+def _snapshot(files: list[SourceFile]) -> list[JSONValue]:
+    return cast(list[JSONValue], [file.model_dump(mode="json") for file in files])
+
+
+async def _project(state: Runtime, project_name: str) -> Path:
+    try:
+        return await asyncio.to_thread(get_project, state.settings.projects_root, project_name)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, "Select an existing project inside PROJECTS_ROOT") from exc
+
+
+def create_app(settings: Settings | None = None, database: Database | None = None) -> FastAPI:
+    configured = settings or get_settings()
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        db = database or Database(configured)
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                code = f.read()
-            if len(code) > 4000: code = code[:4000] + "\n... (truncated)"
-
-            review_text = await get_code_review_async(code, context=f"File: {file_path}", api_key=MISTRAL_API_KEY)
-
-            report = ReviewReport(
-                project_name=project_name,
-                file_path=file_path,
-                content_type="code",
-                summary="Local scan",
-                review_result=review_text,
-                status="completed"
+            await db.initialize()
+            application.state.runtime = Runtime(
+                configured,
+                db,
+                JobStore(db),
+                await dummy_password_hash(),
+                LoginLimiter(configured.login_rate_limit),
             )
-            session.add(report)
-            results.append({"file": file_path, "status": "ok"})
-        except Exception as e:
-            results.append({"file": file_path, "status": "error", "msg": str(e)})
+            yield
+        finally:
+            await db.close()
 
-    session.commit()
-    return {"scanned_count": len(results), "details": results}
+    application = FastAPI(title="AI Code Reviewer", version="0.2.0", lifespan=lifespan)
+    application.add_middleware(TrustedHostMiddleware, allowed_hosts=configured.allowed_hosts)
+    if configured.cors_origins:
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=configured.cors_origins,
+            allow_credentials=False,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Authorization", "Content-Type"],
+        )
+    application.add_middleware(
+        RequestBoundary,
+        max_bytes=configured.max_upload_bytes + 65536,
+        concurrency=configured.http_concurrency,
+    )
+    application.mount(
+        "/static", StaticFiles(directory=REPOSITORY_ROOT / "static", check_dir=False), name="static"
+    )
+    templates = Jinja2Templates(directory=REPOSITORY_ROOT / "templates")
 
-# --- NEW: Endpoints for Extended Features (Migrate, Tests, Scaffold) ---
+    @application.get("/", response_class=HTMLResponse)
+    async def index(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request, name="index.html", context={"request": request}
+        )
 
-@app.post("/api/migrate-code")
-async def migrate_code(
-        file_path: str = Form(...),
-        stack: str = Form("Python 3.11"),
-        current_user: User = Depends(get_current_user)
-):
-    if os.path.commonpath([os.path.abspath(file_path), os.path.abspath(BASE_PROJECT_DIR)]) != os.path.abspath(BASE_PROJECT_DIR):
-        raise HTTPException(status_code=403, detail="Доступ разрешен только к PycharmProjects")
+    @application.get("/healthz")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
 
-    code = read_project_file(file_path)
-    if not code: raise HTTPException(status_code=404, detail="Файл не найден")
+    @application.get("/readyz")
+    async def readiness(request: Request) -> dict[str, str]:
+        async with runtime(request).database.session() as session:
+            await (await session.connection()).exec_driver_sql("SELECT 1")
+        return {"status": "ok"}
 
-    migrated = await migrate_code_async(code, stack, MISTRAL_API_KEY)
-    dir_name = os.path.dirname(file_path)
-    file_name = os.path.basename(file_path)
-    new_path = os.path.join(dir_name, f"{os.path.splitext(file_name)[0]}_migrated.py")
+    @application.post("/token", response_model=TokenResponse)
+    async def login(
+        request: Request, form: Annotated[OAuth2PasswordRequestForm, Depends()]
+    ) -> TokenResponse:
+        state = runtime(request)
+        if not state.limiter.consume(request.client.host if request.client else "unknown"):
+            raise HTTPException(429, "Too many login attempts", headers={"Retry-After": "60"})
+        async with state.database.session() as session:
+            user = (await session.exec(select(User).where(User.username == form.username))).first()
+        observed_hash = user.hashed_password if user else state.dummy_hash
+        valid, replacement = await verify_and_update_password(form.password, observed_hash)
+        if user is None or not user.is_active or not valid:
+            raise HTTPException(
+                401, "Incorrect credentials", headers={"WWW-Authenticate": "Bearer"}
+            )
+        async with state.database.session() as session:
+            current = await session.get(User, user.id)
+            if current is None or not current.is_active or current.hashed_password != observed_hash:
+                raise HTTPException(
+                    401, "Incorrect credentials", headers={"WWW-Authenticate": "Bearer"}
+                )
+            if replacement:
+                connection = await session.connection()
+                updated = await connection.exec_driver_sql(
+                    'UPDATE "user" SET hashed_password = ? WHERE id = ? AND hashed_password = ? AND is_active = 1',
+                    (replacement, current.id, observed_hash),
+                )
+                if updated.rowcount != 1:
+                    raise HTTPException(
+                        401, "Incorrect credentials", headers={"WWW-Authenticate": "Bearer"}
+                    )
+                await session.commit()
+            user = current
+        return TokenResponse(access_token=create_access_token(user, state.settings))
 
-    if write_project_file(new_path, migrated):
-        return {"status": "success", "new_file": new_path}
-    else:
-        raise HTTPException(status_code=500, detail="Ошибка записи")
+    @application.get("/api/config")
+    async def configuration(request: Request, user: ActiveUser) -> dict[str, JSONValue]:
+        state = runtime(request)
 
-@app.post("/api/generate-tests")
-async def generate_tests(
-        file_path: str = Form(...),
-        current_user: User = Depends(get_current_user)
-):
-    code = read_project_file(file_path)
-    if not code: raise HTTPException(status_code=404, detail="Файл не найден")
+        def names() -> list[str]:
+            root = state.settings.projects_root
+            if not root.is_dir():
+                return []
+            projects: list[str] = []
+            with os.scandir(root) as entries:
+                for entry in entries:
+                    if len(projects) >= 1000:
+                        break
+                    if entry.is_dir(follow_symlinks=False) and not entry.name.startswith("."):
+                        projects.append(entry.name)
+            return sorted(projects)
 
-    project_dir = os.path.dirname(file_path)
-    clinerules_path = os.path.join(project_dir, ".clinerules")
-    context = read_project_file(clinerules_path)
-
-    tests = await generate_tests_async(code, MISTRAL_API_KEY, context)
-    test_path = os.path.join(project_dir, f"test_{os.path.basename(file_path)}")
-
-    if write_project_file(test_path, tests):
-        return {"status": "success", "test_file": test_path}
-    else:
-        raise HTTPException(status_code=500, detail="Ошибка записи")
-
-@app.post("/api/scaffold-app")
-async def scaffold_app(
-        description: str = Form(...),
-        stack: str = Form("FastAPI"),
-        project_name: str = Form("my_new_api"),
-        current_user: User = Depends(get_current_user)
-):
-    scaffold = await scaffold_app_async(description, MISTRAL_API_KEY, stack)
-
-    target_dir = os.path.join(BASE_PROJECT_DIR, project_name)
-    os.makedirs(target_dir, exist_ok=True)
-
-    guide_path = os.path.join(target_dir, "scaffold_code.md")
-    write_project_file(guide_path, scaffold)
-
-    return {"status": "success", "guide_path": guide_path}
-
-# --- Улучшенный Агент (Clinerules + Context + Strict Schedule) ---
-
-AGENT_SCAN_INTERVAL = 3600
-
-async def autonomous_agent_loop():
-    print(f"🤖 [АГЕНТ]: Запущен. Строго контролирую {BASE_PROJECT_DIR}")
-
-    while True:
         try:
-            if not os.path.exists(BASE_PROJECT_DIR):
-                await asyncio.sleep(AGENT_SCAN_INTERVAL);
-                continue
+            projects = await asyncio.to_thread(names)
+        except OSError as exc:
+            raise HTTPException(
+                503, "Project directory is unavailable; check server access permissions"
+            ) from exc
+        return {
+            "provider": state.settings.ai_provider,
+            "model": state.settings.mistral_model
+            if state.settings.ai_provider == "mistral"
+            else state.settings.ollama_model,
+            "read_only": True,
+            "projects": cast(list[JSONValue], projects),
+            "limits": {
+                "max_upload_bytes": state.settings.max_upload_bytes,
+                "max_files": state.settings.max_review_files,
+                "max_file_bytes": state.settings.max_file_bytes,
+            },
+        }
 
-            projects = [d for d in os.listdir(BASE_PROJECT_DIR) if os.path.isdir(os.path.join(BASE_PROJECT_DIR, d))]
-            session = next(get_session())
+    @application.get("/api/reports", response_model=list[ReviewReport])
+    async def reports(
+        request: Request,
+        user: ActiveUser,
+        skip: int = Query(0, ge=0),
+        limit: int = Query(20, ge=1, le=100),
+    ) -> list[ReviewReport]:
+        async with runtime(request).database.session() as session:
+            statement = select(ReviewReport)
+            if not user.is_admin:
+                statement = statement.where(ReviewReport.owner_id == _owner(user))
+            return list(
+                (
+                    await session.exec(
+                        statement.order_by(col(ReviewReport.id).desc()).offset(skip).limit(limit)
+                    )
+                ).all()
+            )
 
-            for project_name in projects:
-                project_path = os.path.join(BASE_PROJECT_DIR, project_name)
-                clinerules_path = os.path.join(project_path, ".clinerules")
+    @application.get("/api/jobs", response_model=list[JobResponse])
+    async def jobs(
+        request: Request,
+        user: ActiveUser,
+        skip: int = Query(0, ge=0),
+        limit: int = Query(20, ge=1, le=100),
+    ) -> list[JobResponse]:
+        return [
+            _job_response(job, include_result=False)
+            for job in await runtime(request).jobs.list(_owner(user), limit, skip)
+        ]
 
-                # 1. Долгосрочная память: Проверка .clinerules
-                context = ""
-                if not os.path.exists(clinerules_path):
-                    print(f"🧠 [АГЕНТ]: .clinerules не найден в {project_name}. Создаю знания...")
+    async def owned_job(request: Request, user: User, job_id: str) -> ReviewJob:
+        job = await runtime(request).jobs.get(_owner(user), job_id)
+        if job is None:
+            raise HTTPException(404, "Job not found")
+        return job
 
-                    all_files = []
-                    for root, dirs, files in os.walk(project_path):
-                        for f in files:
-                            all_files.append(os.path.join(root, f))
+    @application.get("/api/jobs/{job_id}", response_model=JobResponse)
+    async def job_detail(request: Request, user: ActiveUser, job_id: str) -> JobResponse:
+        return _job_response(await owned_job(request, user, job_id))
 
-                    req_path = os.path.join(project_path, "requirements.txt")
-                    requirements = read_project_file(req_path)
+    @application.post("/api/jobs/{job_id}/cancel", response_model=JobResponse)
+    async def cancel_job(request: Request, user: ActiveUser, job_id: str) -> JobResponse:
+        job = await runtime(request).jobs.cancel(_owner(user), job_id)
+        if job is None:
+            raise HTTPException(404, "Job not found")
+        return _job_response(job)
 
-                    rules_content = await generate_clinerules_async(all_files, requirements, MISTRAL_API_KEY)
-                    write_project_file(clinerules_path, rules_content)
-                    context = rules_content
-                else:
-                    print(f"📖 [АГЕНТ]: Использую существующие .clinerules для {project_name}")
-                    context = read_project_file(clinerules_path)
+    @application.get("/api/jobs/{job_id}/sarif")
+    async def sarif(request: Request, user: ActiveUser, job_id: str) -> JSONResponse:
+        job = await owned_job(request, user, job_id)
+        result = _job_response(job).result
+        if job.status != "completed" or result is None or not isinstance(result.get("sarif"), dict):
+            raise HTTPException(409, "No completed SARIF result for this job")
+        return JSONResponse(result["sarif"], media_type="application/sarif+json")
 
-                # 2. Сканирование с учетом контекста
-                py_files = scan_local_project(project_path)
-                for file_path in py_files:
-                    try:
-                        code = read_project_file(file_path)
-                        if len(code) > 4000: code = code[:4000]
+    @application.get("/api/jobs/{job_id}/artifacts")
+    async def artifacts(request: Request, user: ActiveUser, job_id: str) -> dict[str, str]:
+        job = await owned_job(request, user, job_id)
+        result = _job_response(job).result
+        artifact_id = result.get("artifact_id") if result else None
+        if job.status != "completed" or not isinstance(artifact_id, str):
+            raise HTTPException(409, "No completed artifacts for this job")
+        try:
+            return await asyncio.to_thread(
+                read_artifacts, runtime(request).settings.data_dir / "artifacts", artifact_id
+            )
+        except (ValueError, OSError) as exc:
+            raise HTTPException(404, "Artifacts are unavailable") from exc
 
-                        review = await get_code_review_async(
-                            code,
-                            context=f"Rules: {context}\nFile: {file_path}",
-                            api_key=MISTRAL_API_KEY
-                        )
+    @application.post("/api/scan-local-project", response_model=JobResponse, status_code=202)
+    async def scan(
+        request: Request,
+        user: ActiveUser,
+        project_name: Annotated[str, Form(min_length=1, max_length=150)],
+        mode: Annotated[Literal["diff", "full"], Form()] = "diff",
+        base_ref: Annotated[str, Form(max_length=200)] = "HEAD",
+    ) -> JobResponse:
+        state = runtime(request)
+        project = await _project(state, project_name)
+        try:
+            files = await asyncio.to_thread(
+                collect_project,
+                project,
+                mode=mode,
+                base_ref=base_ref,
+                max_files=state.settings.max_review_files,
+                max_file_bytes=state.settings.max_file_bytes,
+                max_total_bytes=state.settings.max_review_chars,
+            )
+        except (ValueError, OSError) as exc:
+            raise HTTPException(
+                400, "Project selection is invalid, unavailable, or exceeds its limits"
+            ) from exc
+        return await _enqueue(
+            state,
+            user,
+            "review",
+            {
+                "project_name": project_name,
+                "mode": mode,
+                "base_ref": base_ref,
+                "snapshot": _snapshot(files),
+            },
+        )
 
-                        report = ReviewReport(
-                            project_name=project_name,
-                            file_path=file_path,
-                            content_type="code",
-                            summary="Agent Scan (Context Aware)",
-                            review_result=review,
-                            status="completed"
-                        )
-                        session.add(report)
-                    except Exception as e:
-                        print(f"Error analyzing {file_path}: {e}")
+    @application.post("/api/upload-and-review", response_model=JobResponse, status_code=202)
+    async def upload(
+        request: Request, user: ActiveUser, file: Annotated[UploadFile, File()]
+    ) -> JobResponse:
+        state = runtime(request)
+        filename = file.filename or ""
+        try:
+            if len(relative_parts(filename)) != 1 or Path(filename).suffix.lower() not in {
+                ".py",
+                ".txt",
+                ".md",
+                ".pdf",
+            }:
+                raise ValueError("Invalid upload name")
+        except ValueError as exc:
+            await file.close()
+            raise HTTPException(400, "Use a simple .py, .txt, .md or .pdf filename") from exc
+        directory = state.settings.data_dir / "uploads"
+        await asyncio.to_thread(directory.mkdir, parents=True, exist_ok=True, mode=0o700)
+        if directory.is_symlink():
+            raise HTTPException(500, "Private upload storage is unavailable")
+        upload_id = uuid4().hex
+        target = directory / upload_id
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        total = 0
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                while chunk := await file.read(65536):
+                    total += len(chunk)
+                    if total > state.settings.max_upload_bytes:
+                        raise HTTPException(413, "Upload exceeds limit")
+                    await asyncio.to_thread(output.write, chunk)
+            source = await asyncio.to_thread(
+                read_upload,
+                state.settings.data_dir,
+                upload_id,
+                filename,
+                max_file_bytes=min(state.settings.max_upload_bytes, state.settings.max_file_bytes),
+                max_pages=state.settings.max_pdf_pages,
+            )
+            if len(source.content) > state.settings.max_review_chars:
+                raise HTTPException(413, "Upload exceeds context limit")
+            return await _enqueue(
+                state, user, "upload", {"filename": filename, "snapshot": _snapshot([source])}
+            )
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, "Upload could not be safely decoded within limits") from exc
+        finally:
+            await file.close()
+            target.unlink(missing_ok=True)
 
-            session.commit()
-            session.close()
-            print(f"🤖 [АГЕНТ]: Цикл завершен. Пауза {AGENT_SCAN_INTERVAL} сек.")
-            await asyncio.sleep(AGENT_SCAN_INTERVAL)
+    async def generate(
+        request: Request,
+        user: User,
+        kind: Literal["migrate", "tests"],
+        project_name: str,
+        file_path: str,
+        instructions: str,
+    ) -> JobResponse:
+        state = runtime(request)
+        project = await _project(state, project_name)
+        try:
+            source = await asyncio.to_thread(
+                read_source, project, file_path, max_file_bytes=state.settings.max_file_bytes
+            )
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, "Select a regular file inside the project") from exc
+        return await _enqueue(
+            state,
+            user,
+            kind,
+            {
+                "project_name": project_name,
+                "file_path": file_path,
+                "instructions": instructions,
+                "snapshot": _snapshot([source]),
+            },
+        )
 
-        except Exception as e:
-            print(f"CRITICAL ERROR: {e}")
-            await asyncio.sleep(60)
+    @application.post("/api/migrate-code", response_model=JobResponse, status_code=202)
+    async def migrate(
+        request: Request,
+        user: ActiveUser,
+        project_name: Annotated[str, Form(max_length=150)],
+        file_path: Annotated[str, Form(max_length=1024)],
+        stack: Annotated[str, Form(max_length=1000)] = "Python 3.14",
+    ) -> JobResponse:
+        return await generate(
+            request,
+            user,
+            "migrate",
+            project_name,
+            file_path,
+            f"Migrate to {stack}. Preserve behavior and propose a small unified diff.",
+        )
+
+    @application.post("/api/generate-tests", response_model=JobResponse, status_code=202)
+    async def tests(
+        request: Request,
+        user: ActiveUser,
+        project_name: Annotated[str, Form(max_length=150)],
+        file_path: Annotated[str, Form(max_length=1024)],
+    ) -> JobResponse:
+        return await generate(
+            request,
+            user,
+            "tests",
+            project_name,
+            file_path,
+            "Propose focused regression tests; do not modify source.",
+        )
+
+    @application.post("/api/scaffold-app", response_model=JobResponse, status_code=202)
+    async def scaffold(
+        request: Request,
+        user: ActiveUser,
+        description: Annotated[str, Form(min_length=1, max_length=10000)],
+        project_name: Annotated[str, Form(max_length=150)] = "new_project",
+        stack: Annotated[str, Form(max_length=1000)] = "FastAPI",
+    ) -> JobResponse:
+        try:
+            if len(relative_parts(project_name)) != 1:
+                raise ValueError("Invalid project name")
+        except ValueError as exc:
+            raise HTTPException(400, "Use a simple project name") from exc
+        return await _enqueue(
+            runtime(request),
+            user,
+            "scaffold",
+            {
+                "project_name": project_name,
+                "instructions": f"Create a {stack} scaffold: {description}",
+            },
+        )
+
+    return application
+
+
+app = create_app()

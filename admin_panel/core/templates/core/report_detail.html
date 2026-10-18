@@ -1,0 +1,22 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Отчёт {{ report.id }} — AI Code Reviewer</title>
+    <link rel="stylesheet" href="{% static 'core/reports.css' %}">
+</head>
+<body>
+<main>
+    <header><h1>Отчёт № {{ report.id }}</h1><a href="{% url 'report_list' %}">История ревью</a></header>
+    <article>
+        <h2>{{ report.project_name }}</h2>
+        <p class="meta">{{ report.status }} · {{ report.created_at|date:"d.m.Y H:i:s" }} UTC</p>
+        <p class="path">{{ report.file_path }}</p>
+        <p>{{ report.summary }}</p>
+        <pre>{{ report.review_result }}</pre>
+    </article>
+</main>
+</body>
+</html>

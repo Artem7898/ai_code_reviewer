@@ -1,0 +1,58 @@
+[project]
+name = "ai-code-reviewer"
+version = "0.2.0"
+description = "A local-first, bounded and authenticated code review service"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "aiosqlite>=0.22.1,<0.23",
+    "django>=6.1.2,<6.2",
+    "django-unfold>=0.110.0,<1",
+    "fastapi>=0.146.0,<1",
+    "httpx>=0.28.1,<1",
+    "jinja2>=3.1.6,<4",
+    "pydantic-settings>=2.16.0,<3",
+    "pwdlib[argon2,bcrypt]>=0.3.1,<1",
+    "pyjwt>=2.15.1,<3",
+    "pypdf>=6.21.1,<7",
+    "python-multipart>=0.0.32,<1",
+    "ruff>=0.17.1,<1",
+    "sqlalchemy[asyncio]>=2.1.5,<2.2",
+    "sqlmodel>=0.0.48,<0.1",
+    "starlette>=1.8.0,<2",
+    "uvicorn[standard]>=0.54.0,<1",
+    "whitenoise>=6.12.0,<7",
+]
+
+[dependency-groups]
+dev = [
+    "django-stubs[compatible-mypy]>=6.1.2,<6.2",
+    "pip-audit>=2.10.1,<3",
+    "pytest>=9.1.1,<10",
+    "pytest-asyncio>=1.4.0,<2",
+    "respx>=0.23.1,<1",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error::DeprecationWarning:app.*"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+extend-exclude = ["admin_panel/core/migrations"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.14"
+files = ["app"]
+strict = true
+warn_unreachable = true
+show_error_codes = true
