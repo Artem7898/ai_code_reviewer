@@ -2,7 +2,7 @@ name: Python 3.14 checks
 
 on:
   push:
-    branches: [master]
+    branches: [master, test/docker-isolation-ci]
   pull_request:
     branches: [master]
   workflow_dispatch:
@@ -65,3 +65,28 @@ jobs:
         run: |
           uv export --frozen --no-dev --no-emit-project --format requirements-txt --output-file /tmp/runtime-requirements.txt
           uv run --frozen pip-audit --require-hashes --no-deps -r /tmp/runtime-requirements.txt
+
+  docker-isolation:
+    name: Real Docker isolation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        id: python
+        with:
+          python-version-file: .python-version
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: 0.13.1
+          enable-cache: true
+      - name: Preload sandbox image
+        # Match the default image in app/sandbox.py. The sandbox uses --pull=never.
+        run: docker pull python:3.14.8-slim
+      - name: Test real Docker isolation
+        env:
+          RUN_DOCKER_TESTS: "1"
+          PYTHON_EXECUTABLE: ${{ steps.python.outputs.python-path }}
+        run: uv run --frozen --python "$PYTHON_EXECUTABLE" python -m pytest -q tests/test_sandbox.py -rs
