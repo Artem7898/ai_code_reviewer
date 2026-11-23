@@ -8,13 +8,15 @@ Local Ollama is the default provider. Set `AI_PROVIDER=static` for deterministic
 
 [Architecture and migration](docs/MODERNIZATION.md) · [Validation evidence and limitations](docs/VALIDATION.md) · [Branch protection](docs/BRANCH_PROTECTION.md) · [Документация на русском](README.ru.md)
 
+[Video walkthrough](https://youtu.be/Ama87zrsq_c)
+
 ## Installation
 
 Requires Linux, Python **3.14.8**, Git, and [uv](https://docs.astral.sh/uv/). Dependency versions and hashes are locked in `uv.lock`. Run the following commands from the repository root.
 
 ```bash
 uv sync --frozen
-cp .env.example .env
+test -e .env || cp .env.example .env
 mkdir -p projects
 uv run --frozen python -m app.cli init-db
 uv run --frozen python -m app.cli create-user reviewer --admin
@@ -33,6 +35,43 @@ uv run --frozen python -m app.cli create-user admin --admin --reset-password
 
 In development, the application creates a random signing key at `.data/signing.key` with permissions `0600`. Keep this file between runs. Production requires a separate random `SECRET_KEY` of at least 32 characters; `.env.example` includes a local generation command. Store the value in secure environment settings or a local `.env` file, and keep it out of Git.
 
+## Linux: use an existing Python 3.14 interpreter
+
+Use this alternative when a compatible Python 3.14 interpreter is installed at
+`/usr/bin/python3.14`. Otherwise substitute the actual executable path.
+`--python` overrides the project interpreter pin for this invocation without
+changing `.python-version`. `--frozen` preserves `uv.lock`.
+
+```bash
+/usr/bin/python3.14 --version
+uv sync --frozen --python /usr/bin/python3.14
+uv run --frozen --python /usr/bin/python3.14 python --version
+
+test -e .env || cp .env.example .env
+mkdir -p projects
+
+uv run --frozen --python /usr/bin/python3.14 python -m app.cli init-db
+uv run --frozen --python /usr/bin/python3.14 python -m app.cli create-user reviewer --admin
+
+uv run --frozen --python /usr/bin/python3.14 python admin_panel/manage.py migrate --noinput
+uv run --frozen --python /usr/bin/python3.14 python admin_panel/manage.py createsuperuser
+uv run --frozen --python /usr/bin/python3.14 python admin_panel/manage.py collectstatic --noinput
+```
+
+Keep `--python /usr/bin/python3.14` on every subsequent `uv run`, including
+API, worker, Django, CLI, and test commands. Otherwise uv uses the project
+interpreter pin again. API and Django accounts are separate; passwords are
+entered interactively. Run account creation once. An existing `.env` is preserved.
+
+```bash
+uv run --frozen --python /usr/bin/python3.14 python -m pytest -q -rs
+uv run --frozen --python /usr/bin/python3.14 python admin_panel/manage.py test core --noinput
+```
+
+API test fixtures should explicitly allow `testserver` and disable local dotenv
+loading. `SKIPPED ... Explicit local Docker integration check` means the optional
+Docker scenario did not run; consult the sandbox prerequisites in this README.
+
 ## Running the services
 
 Start these commands in three terminals:
@@ -44,6 +83,8 @@ uv run --frozen uvicorn admin_panel.asgi:application --app-dir admin_panel --hos
 ```
 
 The API interface is available on port 8000 and Django on port 8080. `/healthz` checks the API process; `/readyz` checks database access. Neither endpoint verifies model availability. `/stats/` requires a Django login. Public deployment requires HTTPS at a reverse proxy and an appropriate allowed-host configuration.
+
+Use **English / Русский** in the FastAPI interface header to change the language without reloading. The current session, form values, and selected result stay in place. The browser remembers the language for future visits. Review content and API messages appear as returned.
 
 Place each repository in its own directory under `PROJECTS_ROOT`, for example `projects/my_project`. Symbolic links, hard links, absolute paths, `..` traversal, `.env`, and internal directories are excluded. Safe file access uses Linux file-descriptor operations, `openat`/`O_NOFOLLOW`, and `/proc`.
 

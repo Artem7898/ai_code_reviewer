@@ -10,87 +10,93 @@
 </head>
 <body>
 <header class="site-header">
-    <div><p class="eyebrow">Персональный помощник разработчика</p><h1>AI Code Reviewer</h1></div>
-    <button id="logout" type="button" class="secondary" hidden>Выйти</button>
+    <div><p class="eyebrow" data-i18n="eyebrow">Персональный помощник разработчика</p><h1>AI Code Reviewer</h1></div>
+    <div class="header-actions">
+        <select id="language" aria-label="Язык интерфейса" data-i18n-label="language">
+            <option value="en" lang="en">English</option>
+            <option value="ru" lang="ru" selected>Русский</option>
+        </select>
+        <button id="logout" type="button" class="secondary" hidden data-i18n="logout">Выйти</button>
+    </div>
 </header>
 <main>
-    <p id="message" class="message" role="status" aria-live="polite">Войдите, чтобы запустить ревью.</p>
+    <p id="message" class="message" role="status" aria-live="polite" data-i18n="welcome">Войдите, чтобы запустить ревью.</p>
     <section id="auth-panel" class="panel auth-panel" aria-labelledby="auth-title">
-        <h2 id="auth-title">Вход</h2>
-        <p class="muted">Используйте учётную запись API. Сессия действует до закрытия или обновления страницы.</p>
+        <h2 id="auth-title" data-i18n="signInTitle">Вход</h2>
+        <p class="muted" data-i18n="authHelp">Используйте учётную запись API. Сессия действует до закрытия или обновления страницы.</p>
         <form id="login-form">
-            <label for="username">Имя пользователя</label>
+            <label for="username" data-i18n="username">Имя пользователя</label>
             <input id="username" name="username" autocomplete="username" required maxlength="128">
-            <label for="password">Пароль</label>
+            <label for="password" data-i18n="password">Пароль</label>
             <input id="password" name="password" type="password" autocomplete="current-password" required>
-            <button type="submit">Войти</button>
+            <button type="submit" data-i18n="signIn">Войти</button>
         </form>
     </section>
     <div id="workspace" hidden>
-        <aside class="configuration panel" aria-label="Настройки анализа">
-            <p id="provider-info">Загрузка конфигурации…</p>
+        <aside class="configuration panel" aria-label="Настройки анализа" data-i18n-label="analysisSettings">
+            <p id="provider-info" data-i18n="loadingConfig">Загрузка конфигурации…</p>
             <p id="limits-info" class="muted"></p>
         </aside>
         <div class="layout">
             <section class="panel controls" aria-labelledby="review-title">
-                <h2 id="review-title">Новое ревью</h2>
+                <h2 id="review-title" data-i18n="newReview">Новое ревью</h2>
                 <form id="upload-form">
-                    <h3>Отдельный файл</h3>
-                    <label for="upload-file">Исходный код или PDF</label>
+                    <h3 data-i18n="singleFile">Отдельный файл</h3>
+                    <label for="upload-file" data-i18n="sourceFile">Исходный код или PDF</label>
                     <input id="upload-file" name="file" type="file" required>
-                    <button type="submit">Проверить файл</button>
+                    <button type="submit" data-i18n="reviewFile">Проверить файл</button>
                 </form>
                 <hr>
                 <form id="project-form">
-                    <h3>Локальный проект</h3>
-                    <label for="project-name">Проект в разрешённом каталоге</label>
+                    <h3 data-i18n="localProject">Локальный проект</h3>
+                    <label for="project-name" data-i18n="allowedProject">Проект в разрешённом каталоге</label>
                     <select id="project-name" name="project_name" required>
-                        <option value="">Выберите проект</option>
+                        <option value="" data-i18n="chooseProject">Выберите проект</option>
                     </select>
-                    <label for="review-mode">Область анализа</label>
+                    <label for="review-mode" data-i18n="reviewScope">Область анализа</label>
                     <select id="review-mode" name="mode">
-                        <option value="diff">Изменения Git</option>
-                        <option value="full">Весь проект</option>
+                        <option value="diff" data-i18n="gitDiff">Изменения Git</option>
+                        <option value="full" data-i18n="fullProject">Весь проект</option>
                     </select>
-                    <label for="base-ref">Базовая ревизия Git</label>
+                    <label for="base-ref" data-i18n="baseRevision">Базовая ревизия Git</label>
                     <input id="base-ref" name="base_ref" value="HEAD" maxlength="200" required>
-                    <p class="muted">Сравнение с HEAD включает изменения рабочего дерева. Выберите другую ревизию для сравнения веток.</p>
-                    <button type="submit">Запустить ревью</button>
+                    <p class="muted" data-i18n="baseHelp">Сравнение с HEAD включает изменения рабочего дерева. Выберите другую ревизию для сравнения веток.</p>
+                    <button type="submit" data-i18n="runReview">Запустить ревью</button>
                 </form>
                 <hr>
                 <details>
-                    <summary>Предложить изменения</summary>
-                    <p class="muted">Результат сохраняется как отдельный артефакт для проверки. Исходные файлы проекта не изменяются.</p>
+                    <summary data-i18n="proposeChanges">Предложить изменения</summary>
+                    <p class="muted" data-i18n="proposalHelp">Результат сохраняется как отдельный артефакт для проверки. Исходные файлы проекта не изменяются.</p>
                     <form id="proposal-form">
-                        <label for="proposal-kind">Задача</label>
+                        <label for="proposal-kind" data-i18n="task">Задача</label>
                         <select id="proposal-kind" name="kind">
-                            <option value="migrate-code">Модернизация кода</option>
-                            <option value="generate-tests">Генерация тестов</option>
+                            <option value="migrate-code" data-i18n="migrate">Модернизация кода</option>
+                            <option value="generate-tests" data-i18n="generateTests">Генерация тестов</option>
                         </select>
-                        <p class="muted">Используется проект, выбранный выше.</p>
-                        <label for="proposal-path">Файл относительно корня проекта</label>
+                        <p class="muted" data-i18n="projectHelp">Используется проект, выбранный выше.</p>
+                        <label for="proposal-path" data-i18n="relativeFile">Файл относительно корня проекта</label>
                         <input id="proposal-path" name="file_path" placeholder="src/example.py" maxlength="500" required>
-                        <label for="proposal-stack">Целевая платформа</label>
+                        <label for="proposal-stack" data-i18n="targetStack">Целевая платформа</label>
                         <input id="proposal-stack" name="stack" value="Python 3.14" maxlength="100">
-                        <button type="submit">Подготовить предложение</button>
+                        <button type="submit" data-i18n="prepareProposal">Подготовить предложение</button>
                     </form>
                 </details>
             </section>
             <section class="panel results" aria-labelledby="result-title">
-                <div class="section-heading"><h2 id="result-title">Результат</h2><button id="refresh" class="secondary" type="button">Обновить</button></div>
-                <div id="selected-result"><p class="muted">Выберите задание или отчёт из истории.</p></div>
+                <div class="section-heading"><h2 id="result-title" data-i18n="result">Результат</h2><button id="refresh" class="secondary" type="button" data-i18n="refresh">Обновить</button></div>
+                <div id="selected-result"><p class="muted" data-i18n="chooseResult">Выберите задание или отчёт из истории.</p></div>
             </section>
             <section class="panel history" aria-labelledby="jobs-title">
-                <h2 id="jobs-title">Задания</h2>
-                <div id="job-list" class="item-list"><p class="muted">Заданий пока нет.</p></div>
+                <h2 id="jobs-title" data-i18n="jobs">Задания</h2>
+                <div id="job-list" class="item-list"><p class="muted" data-i18n="emptyJobs">Заданий пока нет.</p></div>
                 <hr>
-                <h2>История отчётов</h2>
-                <div id="report-list" class="item-list"><p class="muted">Отчётов пока нет.</p></div>
-                <div class="pagination"><button id="reports-previous" class="secondary" type="button" disabled>Назад</button><span id="reports-page">1</span><button id="reports-next" class="secondary" type="button" disabled>Вперёд</button></div>
+                <h2 data-i18n="reportHistory">История отчётов</h2>
+                <div id="report-list" class="item-list"><p class="muted" data-i18n="emptyReports">Отчётов пока нет.</p></div>
+                <div class="pagination"><button id="reports-previous" class="secondary" type="button" disabled data-i18n="previous">Назад</button><span id="reports-page">1</span><button id="reports-next" class="secondary" type="button" disabled data-i18n="next">Вперёд</button></div>
             </section>
         </div>
     </div>
 </main>
-<footer>Проверяйте замечания и изменения перед применением. Ответы модели могут содержать ошибки.</footer>
+<footer data-i18n="footer">Проверяйте замечания и изменения перед применением. Ответы модели могут содержать ошибки.</footer>
 </body>
 </html>

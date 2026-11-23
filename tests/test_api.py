@@ -20,6 +20,8 @@ from app.worker import Worker
 @pytest.fixture
 async def api(tmp_path: Path) -> AsyncIterator[tuple[httpx.AsyncClient, Database, Settings]]:
     settings = Settings(
+        _env_file=None,
+        allowed_hosts=["testserver"],
         environment="test",
         data_dir=tmp_path / "data",
         database_path=tmp_path / "db.sqlite3",
