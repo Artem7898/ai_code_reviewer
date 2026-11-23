@@ -8,13 +8,15 @@
 
 [Архитектура и миграция](docs/ru/MODERNIZATION.md) · [Результаты проверок](docs/ru/VALIDATION.md) · [Защита ветки](docs/ru/BRANCH_PROTECTION.md)
 
+[Видеообзор](https://youtu.be/Ama87zrsq_c)
+
 ## Установка
 
 Требуются Linux, Python **3.14.8**, Git и [uv](https://docs.astral.sh/uv/). Версии зависимостей и их хеши зафиксированы в `uv.lock`. Рабочий каталог всех следующих команд — корень репозитория.
 
 ```bash
 uv sync --frozen
-cp .env.example .env
+test -e .env || cp .env.example .env
 mkdir -p projects
 uv run --frozen python -m app.cli init-db
 uv run --frozen python -m app.cli create-user reviewer --admin
@@ -33,6 +35,44 @@ uv run --frozen python -m app.cli create-user admin --admin --reset-password
 
 В разработке приложение создаёт случайный ключ подписи в `.data/signing.key` с правами `0600`. Не удаляйте этот файл между запусками. В production обязателен собственный случайный `SECRET_KEY` длиной не менее 32 символов; пример генерации есть в `.env.example`. Значение хранится в настройках окружения или локальном `.env`.
 
+## Linux: использовать установленный Python 3.14
+
+Этот вариант предназначен для совместимого Python 3.14 по пути
+`/usr/bin/python3.14`. На другой системе укажите фактический путь.
+`--python` переопределяет pin интерпретатора для текущего вызова, не изменяя
+`.python-version`. `--frozen` сохраняет `uv.lock`.
+
+```bash
+/usr/bin/python3.14 --version
+uv sync --frozen --python /usr/bin/python3.14
+uv run --frozen --python /usr/bin/python3.14 python --version
+
+test -e .env || cp .env.example .env
+mkdir -p projects
+
+uv run --frozen --python /usr/bin/python3.14 python -m app.cli init-db
+uv run --frozen --python /usr/bin/python3.14 python -m app.cli create-user reviewer --admin
+
+uv run --frozen --python /usr/bin/python3.14 python admin_panel/manage.py migrate --noinput
+uv run --frozen --python /usr/bin/python3.14 python admin_panel/manage.py createsuperuser
+uv run --frozen --python /usr/bin/python3.14 python admin_panel/manage.py collectstatic --noinput
+```
+
+Добавляйте `--python /usr/bin/python3.14` в каждый последующий `uv run`,
+включая запуск API, worker, Django, CLI и тестов. Иначе используется pin проекта.
+Учётные записи API и Django создаются отдельно. Пароли вводятся интерактивно.
+Создание каждой учётной записи выполняется один раз. Существующий `.env` сохраняется.
+
+```bash
+uv run --frozen --python /usr/bin/python3.14 python -m pytest -q -rs
+uv run --frozen --python /usr/bin/python3.14 python admin_panel/manage.py test core --noinput
+```
+
+Фикстуры API-тестов должны явно разрешать `testserver` и отключать чтение
+локального dotenv. `SKIPPED ... Explicit local Docker integration check`
+означает, что отдельный Docker-сценарий не выполнялся. требования описаны
+в разделе песочницы этого README.
+
 ## Запуск
 
 В трёх терминалах:
@@ -46,6 +86,8 @@ uv run --frozen uvicorn admin_panel.asgi:application --app-dir admin_panel --hos
 Интерфейс API доступен на порту 8000, Django — на 8080. `/healthz` проверяет процесс API; `/readyz` проверяет доступность базы. Эти проверки не подтверждают наличие модели. `/stats/` требует входа в Django. Публичное развёртывание требует HTTPS на обратном прокси и настройки разрешённых хостов.
 
 Поместите репозиторий отдельным каталогом внутрь `PROJECTS_ROOT`, например `projects/my_project`. Символьные и жёсткие ссылки, абсолютные пути, выход через `..`, `.env` и служебные каталоги исключены. Приложение рассчитано на Linux; безопасная работа с файловыми дескрипторами использует `openat`/`O_NOFOLLOW` и `/proc`.
+Переключатель **English / Русский** в шапке интерфейса FastAPI меняет язык без перезагрузки. Текущая сессия, заполненные формы и выбранный результат сохраняются. Браузер запоминает язык для следующих посещений. Содержимое отчётов и сообщения API отображаются в исходном виде.
+
 
 ### Локальная модель
 

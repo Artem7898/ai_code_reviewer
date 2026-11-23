@@ -1,12 +1,19 @@
+import { currentLocale, label, setText, switchLanguage, translate } from "./i18n.js";
+
 // All untrusted model output, filenames and server messages are rendered as text.
 // The bearer token exists only in this module's memory, never in Web Storage.
 const byId = (id) => document.getElementById(id);
 const terminalStates = new Set(["completed", "failed", "cancelled", "succeeded"]);
-const statusNames = {
-    queued: "В очереди", pending: "Ожидает", running: "Выполняется",
-    completed: "Завершено", succeeded: "Завершено", failed: "Ошибка",
-    cancelling: "Отменяется", cancelled: "Отменено",
+const statusKeys = new Set(["queued", "pending", "running", "completed", "failed", "cancelling", "cancelled"]);
+const statusName = (status) => {
+    const key = status === "succeeded" ? "completed" : status;
+    return statusKeys.has(key) ? translate(key) : status;
 };
+const kindKeys = new Map([
+    ["upload", "upload"], ["review", "scan"],
+    ["migrate", "migrate"], ["tests", "generateTests"],
+]);
+const jobKind = (kind, fallback) => kindKeys.has(kind) ? translate(kindKeys.get(kind)) : kind || translate(fallback);
 const controllers = new Set();
 let accessToken = null;
 let sessionVersion = 0;
@@ -31,25 +38,34 @@ for (const name of ["localStorage", "sessionStorage"]) {
 
 function element(tag, text, className) {
     const item = document.createElement(tag);
-    if (text !== undefined && text !== null) item.textContent = String(text);
+    if (text !== undefined && text !== null) setText(item, text);
     if (className) item.className = className;
     return item;
 }
 
 function message(text, isError = false) {
     const item = byId("message");
-    item.textContent = text;
+    delete item.dataset.i18n;
+    setText(item, text);
     item.classList.toggle("error", isError);
 }
 
+class RequestError extends Error {
+    constructor(render) {
+        super(render());
+        this.render = render;
+    }
+}
+
 function errorMessage(error) {
-    return error instanceof Error ? error.message : "Не удалось выполнить запрос.";
+    if (error instanceof RequestError) return error.render;
+    return error instanceof Error ? error.message : label("requestFailed");
 }
 
 function detailMessage(detail) {
-    if (typeof detail === "string") return detail;
-    if (Array.isArray(detail)) return detail.map((item) => item.msg || "Некорректные данные").join("; ");
-    return "Запрос отклонён сервером.";
+    if (typeof detail === "string") return () => detail;
+    if (Array.isArray(detail)) return () => detail.map((item) => item.msg || translate("invalidData")).join("; ");
+    return label("requestRejected");
 }
 
 async function api(path, options = {}, authenticated = true) {
@@ -60,7 +76,7 @@ async function api(path, options = {}, authenticated = true) {
     try {
         const headers = new Headers(options.headers);
         if (authenticated) {
-            if (!accessToken) throw new Error("Войдите в систему.");
+            if (!accessToken) throw new RequestError(label("signInRequired"));
             headers.set("Authorization", `Bearer ${accessToken}`);
         }
         const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
@@ -72,9 +88,9 @@ async function api(path, options = {}, authenticated = true) {
         if (version !== sessionVersion) throw new DOMException("Session changed", "AbortError");
         if (response.status === 401 && authenticated) {
             endSession();
-            throw new Error("Сессия истекла. Войдите снова.");
+            throw new RequestError(label("sessionExpired"));
         }
-        if (!response.ok) throw new Error(detailMessage(payload.detail));
+        if (!response.ok) throw new RequestError(detailMessage(payload.detail));
         return payload;
     } finally {
         clearTimeout(timeout);
@@ -109,10 +125,10 @@ function endSession() {
     byId("auth-panel").hidden = false;
     byId("password").value = "";
     byId("upload-file").value = "";
-    byId("selected-result").replaceChildren(element("p", "Выберите задание или отчёт из истории.", "muted"));
+    byId("selected-result").replaceChildren(element("p", label("chooseResult"), "muted"));
     byId("job-list").replaceChildren();
     byId("report-list").replaceChildren();
-    byId("project-name").replaceChildren(element("option", "Выберите проект"));
+    byId("project-name").replaceChildren(element("option", label("chooseProject")));
     byId("project-name").firstElementChild.value = "";
 }
 
@@ -144,14 +160,14 @@ byId("login-form").addEventListener("submit", (event) => {
     withForm(event.currentTarget, async () => {
         const body = new URLSearchParams(new FormData(event.currentTarget));
         const result = await api("/token", { method: "POST", body }, false);
-        if (typeof result.access_token !== "string") throw new Error("Сервер не вернул токен доступа.");
+        if (typeof result.access_token !== "string") throw new RequestError(label("missingToken"));
         sessionVersion += 1;
         accessToken = result.access_token;
         byId("password").value = "";
         byId("auth-panel").hidden = true;
         byId("workspace").hidden = false;
         byId("logout").hidden = false;
-        message("Вход выполнен. Подготовьте файл или выберите проект.");
+        message(label("signedIn"));
         await loadConfiguration();
         await Promise.all([refresh(), loadReports()]);
         schedulePolling();
@@ -160,20 +176,29 @@ byId("login-form").addEventListener("submit", (event) => {
 
 byId("logout").addEventListener("click", () => {
     endSession();
-    message("Вы вышли из системы.");
+    message(label("signedOut"));
 });
 
 async function loadConfiguration() {
     const config = await api("/api/config");
     const provider = config.provider || "local";
-    const model = config.model || "модель по умолчанию";
-    byId("provider-info").textContent = `Провайдер: ${provider} · Модель: ${model} · ${config.read_only ? "Проекты доступны только для чтения" : "Изменения требуют отдельного применения"}`;
+    delete byId("provider-info").dataset.i18n;
+    setText(byId("provider-info"), () => translate(
+        "providerInfo", provider, config.model || translate("defaultModel"),
+        translate(config.read_only ? "readOnly" : "applySeparately"),
+    ));
     maxUploadBytes = Number(config.limits?.max_upload_bytes) || 0;
-    const size = maxUploadBytes ? `${(maxUploadBytes / 1024 / 1024).toFixed(1)} МиБ` : "по настройкам сервера";
-    byId("limits-info").textContent = `Лимит файла: ${size}. Файлов в задании: ${config.limits?.max_files || "по настройкам сервера"}.`;
+    setText(byId("limits-info"), () => {
+        const size = maxUploadBytes
+            ? translate("size", (maxUploadBytes / 1024 / 1024).toLocaleString(currentLocale(), {
+                minimumFractionDigits: 1, maximumFractionDigits: 1,
+            }))
+            : translate("serverLimit");
+        return translate("limits", size, config.limits?.max_files || translate("serverLimit"));
+    });
     const select = byId("project-name");
     select.replaceChildren();
-    const prompt = element("option", "Выберите проект");
+    const prompt = element("option", label("chooseProject"));
     prompt.value = "";
     select.append(prompt);
     for (const project of (config.projects || [])) {
@@ -182,7 +207,7 @@ async function loadConfiguration() {
         option.value = name;
         select.append(option);
     }
-    if (!config.projects?.length) message("Разрешённые проекты пока не зарегистрированы. Можно загрузить отдельный файл.");
+    if (!config.projects?.length) message(label("noProjects"));
 }
 
 async function enqueue(path, body) {
@@ -191,7 +216,7 @@ async function enqueue(path, body) {
     selectedJobRevision = null;
     hasActiveJobs = true;
     await showSelectedJob(job);
-    message("Задание добавлено в очередь. Прогресс обновляется автоматически.");
+    message(label("jobQueued"));
     await refresh();
     schedulePolling();
 }
@@ -200,8 +225,8 @@ byId("upload-form").addEventListener("submit", (event) => {
     event.preventDefault();
     withForm(event.currentTarget, async () => {
         const file = byId("upload-file").files[0];
-        if (!file) throw new Error("Выберите файл.");
-        if (maxUploadBytes && file.size > maxUploadBytes) throw new Error("Размер файла превышает разрешённый лимит.");
+        if (!file) throw new RequestError(label("chooseFile"));
+        if (maxUploadBytes && file.size > maxUploadBytes) throw new RequestError(label("fileTooLarge"));
         const body = new FormData();
         body.append("file", file);
         await enqueue("/api/upload-and-review", body);
@@ -222,7 +247,7 @@ byId("proposal-form").addEventListener("submit", (event) => {
     event.preventDefault();
     withForm(event.currentTarget, async () => {
         const project = byId("project-name").value;
-        if (!project) throw new Error("Сначала выберите проект.");
+        if (!project) throw new RequestError(label("projectRequired"));
         const body = new FormData(event.currentTarget);
         const kind = body.get("kind");
         body.delete("kind");
@@ -234,16 +259,16 @@ byId("proposal-form").addEventListener("submit", (event) => {
 function timestamp(value) {
     if (!value) return "";
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("ru-RU");
+    return Number.isNaN(date.getTime()) ? "" : date.toLocaleString(currentLocale());
 }
 
 function renderJobList(jobs) {
     const list = byId("job-list");
     const fragment = document.createDocumentFragment();
     for (const job of jobs.slice(0, 50)) {
-        const button = element("button", `${job.project_name || job.kind || "Задание"} · ${statusNames[job.status] || job.status}`, "item-button");
+        const button = element("button", () => `${job.project_name || jobKind(job.kind, "job")} · ${statusName(job.status)}`, "item-button");
         button.type = "button";
-        button.append(element("span", timestamp(job.created_at)));
+        button.append(element("span", () => timestamp(job.created_at)));
         button.addEventListener("click", async () => {
             selectedJobId = job.id;
             selectedJobRevision = null;
@@ -254,7 +279,7 @@ function renderJobList(jobs) {
         fragment.append(button);
     }
     list.replaceChildren(fragment);
-    if (!jobs.length) list.append(element("p", "Заданий пока нет.", "muted"));
+    if (!jobs.length) list.append(element("p", label("emptyJobs"), "muted"));
 }
 
 function summaryRevision(job) {
@@ -322,10 +347,10 @@ async function refresh() {
 function renderFindings(result, parent) {
     if (result.summary) parent.append(element("p", result.summary));
     const findings = Array.isArray(result.findings) ? result.findings : [];
-    if (!findings.length && result.findings) parent.append(element("p", "Замечаний не обнаружено.", "muted"));
+    if (!findings.length && result.findings) parent.append(element("p", label("noFindings"), "muted"));
     for (const finding of findings.slice(0, 200)) {
         const article = element("article", null, "finding");
-        article.append(element("h3", `${finding.severity || "info"} · ${finding.title || finding.rule_id || "Замечание"}`));
+        article.append(element("h3", () => `${finding.severity || "info"} · ${finding.title || finding.rule_id || translate("finding")}`));
         const line = finding.line_start || finding.start_line || finding.line;
         const location = `${finding.file_path || finding.path || ""}${line ? `:${line}` : ""}`;
         if (location) article.append(element("p", location, "result-meta"));
@@ -336,7 +361,7 @@ function renderFindings(result, parent) {
         if (finding.suggestion) article.append(element("p", finding.suggestion));
         parent.append(article);
     }
-    if (findings.length > 200) parent.append(element("p", "Показаны первые 200 замечаний. Полный результат доступен в SARIF.", "muted"));
+    if (findings.length > 200) parent.append(element("p", label("truncatedFindings"), "muted"));
 }
 
 function downloadJson(value, filename) {
@@ -356,23 +381,24 @@ function renderJob(job) {
     if (revision === selectedJobRevision) return;
     selectedJobRevision = revision;
     const parent = byId("selected-result");
-    parent.replaceChildren(element("h3", `${job.kind || "Ревью"} · ${statusNames[job.status] || job.status}`));
-    parent.append(element("p", `Задание ${job.id} · ${timestamp(job.created_at)}`, "result-meta"));
+    parent.replaceChildren(element("h3", () => `${jobKind(job.kind, "review")} · ${statusName(job.status)}`));
+    parent.append(element("p", () => `${translate("job")} ${job.id} · ${timestamp(job.created_at)}`, "result-meta"));
     const progress = element("progress");
     progress.max = 1;
     progress.value = Math.max(0, Math.min(1, Number(job.progress) || 0));
-    progress.setAttribute("aria-label", "Прогресс задания");
+    progress.setAttribute("aria-label", translate("progress"));
+    progress.dataset.i18nLabel = "progress";
     parent.append(progress);
     const actions = element("div", null, "result-actions");
     if (!terminalStates.has(job.status)) {
-        const cancel = element("button", "Отменить задание", "danger");
+        const cancel = element("button", label("cancelJob"), "danger");
         cancel.type = "button";
         cancel.addEventListener("click", async () => {
             cancel.disabled = true;
             try {
                 await api(`/api/jobs/${encodeURIComponent(job.id)}/cancel`, { method: "POST" });
                 await refresh();
-                message("Запрошена отмена задания.");
+                message(label("cancelRequested"));
             } catch (error) { showError(error); }
             finally { cancel.disabled = false; }
         });
@@ -386,12 +412,12 @@ function renderJob(job) {
     if (result && typeof result === "object") {
         renderFindings(result, parent);
         if (result.validation) {
-            parent.append(element("p", `Проверка артефакта: ${result.validation.status || "неизвестно"}`, "result-meta"));
+            parent.append(element("p", () => translate("validation", result.validation.status || translate("unknown")), "result-meta"));
             if (result.validation.output) parent.append(element("pre", result.validation.output));
         }
         if (result.artifact_id) {
             let artifactLoaded = false;
-            const artifact = element("button", "Открыть предложенные изменения", "secondary");
+            const artifact = element("button", label("openArtifact"), "secondary");
             artifact.type = "button";
             artifact.addEventListener("click", async () => {
                 artifact.disabled = true;
@@ -400,22 +426,22 @@ function renderJob(job) {
                     if (selectedJobId !== job.id) return;
                     const details = element("details");
                     details.open = true;
-                    details.append(element("summary", "Предложенный артефакт"));
+                    details.append(element("summary", label("artifact")));
                     details.append(element("pre", JSON.stringify(payload, null, 2)));
-                    const download = element("button", "Скачать JSON", "secondary");
+                    const download = element("button", label("downloadJson"), "secondary");
                     download.type = "button";
                     download.addEventListener("click", () => downloadJson(payload, `proposal-${job.id}.json`));
                     details.append(download);
                     parent.append(details);
                     artifactLoaded = true;
-                    artifact.textContent = "Предложение открыто";
+                    setText(artifact, label("artifactOpened"));
                 } catch (error) { showError(error); }
                 finally { artifact.disabled = artifactLoaded; }
             });
             actions.append(artifact);
         }
         if (Array.isArray(result.findings) || result.sarif) {
-            const sarif = element("button", "Скачать SARIF", "secondary");
+            const sarif = element("button", label("downloadSarif"), "secondary");
             sarif.type = "button";
             sarif.addEventListener("click", async () => {
                 sarif.disabled = true;
@@ -439,9 +465,9 @@ async function loadReports() {
     const list = byId("report-list");
     list.replaceChildren();
     for (const report of items) {
-        const button = element("button", report.project_name || report.file_path || "Отчёт", "item-button");
+        const button = element("button", report.project_name || report.file_path || label("report"), "item-button");
         button.type = "button";
-        button.append(element("span", `${report.file_path || ""} · ${statusNames[report.status] || report.status} · ${timestamp(report.created_at)}`));
+        button.append(element("span", () => `${report.file_path || ""} · ${statusName(report.status)} · ${timestamp(report.created_at)}`));
         button.addEventListener("click", () => {
             selectedJobId = null;
             selectedJobRevision = null;
@@ -450,17 +476,17 @@ async function loadReports() {
             detailRequest?.controller.abort();
             detailRequest = null;
             const parent = byId("selected-result");
-            parent.replaceChildren(element("h3", report.project_name || "Отчёт"));
-            parent.append(element("p", `${report.file_path || ""} · ${timestamp(report.created_at)}`, "result-meta"));
+            parent.replaceChildren(element("h3", report.project_name || label("report")));
+            parent.append(element("p", () => `${report.file_path || ""} · ${timestamp(report.created_at)}`, "result-meta"));
             try {
                 const result = JSON.parse(report.review_result);
                 if (result && typeof result === "object") renderFindings(result, parent);
                 else parent.append(element("pre", report.review_result, "report-text"));
-            } catch { parent.append(element("pre", report.review_result || report.summary || "Нет содержимого.", "report-text")); }
+            } catch { parent.append(element("pre", report.review_result || report.summary || label("emptyReport"), "report-text")); }
         });
         list.append(button);
     }
-    if (!items.length) list.append(element("p", "Отчётов пока нет.", "muted"));
+    if (!items.length) list.append(element("p", label("emptyReports"), "muted"));
     byId("reports-previous").disabled = requestedOffset === 0;
     byId("reports-next").disabled = items.length < reportPageSize;
     byId("reports-page").textContent = String(Math.floor(requestedOffset / reportPageSize) + 1);
@@ -479,7 +505,7 @@ byId("refresh").addEventListener("click", async () => {
     button.disabled = true;
     try {
         await Promise.all([refresh(), loadReports()]);
-        message("Данные обновлены.");
+        message(label("refreshed"));
     } catch (error) { showError(error); }
     finally { button.disabled = false; }
 });
@@ -488,3 +514,6 @@ document.addEventListener("visibilitychange", () => {
     else if (accessToken) refresh().catch(showError).finally(schedulePolling);
 });
 window.addEventListener("pagehide", endSession);
+
+byId("language").addEventListener("change", (event) => switchLanguage(event.currentTarget.value));
+switchLanguage();

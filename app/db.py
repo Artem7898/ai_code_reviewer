@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 from collections.abc import AsyncIterator
@@ -10,6 +11,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import event, inspect
 from sqlalchemy.engine import URL, Connection
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -138,8 +140,31 @@ class Database:
                 raise
 
     async def initialize(self) -> None:
-        async with self.engine.connect() as connection:
-            await connection.run_sync(_migrate)
+        """Retry transient SQLite locks during concurrent startup."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 30.0
+        delay = 0.05
+        while True:
+            try:
+                async with self.engine.connect() as connection:
+                    await connection.run_sync(_migrate)
+                return
+            except OperationalError as error:
+                original = error.orig
+                code = getattr(original, "sqlite_errorcode", None)
+                if (
+                    not isinstance(original, sqlite3.OperationalError)
+                    or not isinstance(code, int)
+                    or (code & 0xFF) not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+                ):
+                    raise
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise
+                await asyncio.sleep(min(delay, remaining))
+                if loop.time() >= deadline:
+                    raise
+                delay = min(delay * 2, 0.5)
 
     async def close(self) -> None:
         await self.engine.dispose()
